@@ -171,7 +171,7 @@ pub fn quick_bar(
                 let width = (ui.available_width() - 255.0).clamp(150.0, 480.0);
                 egui::Frame::NONE
                     .fill(egui::Color32::WHITE)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .stroke(egui::Stroke::new(1.0, theme::INPUT_BORDER))
                     .corner_radius(8)
                     .inner_margin(egui::Margin::symmetric(10, 5))
                     .show(ui, |ui| {
@@ -374,7 +374,7 @@ fn history_field(
     width: f32,
 ) -> egui::Response {
     ui.label(label);
-    let response = ui.add_sized([width, 32.0], egui::TextEdit::singleline(value));
+    let response = theme::text_field(ui, value, width);
     egui::ComboBox::from_id_salt(label)
         .width(20.0)
         .selected_text("")
@@ -476,7 +476,7 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                     if panel.tab != Tab::Find { history_field(ui, "Remplacer par :", &mut panel.query.replacement, &panel.replacements, field_width); }
                     if panel.tab == Tab::Files {
                         history_field(ui, "Filtres :", &mut panel.filters, &[], field_width).on_hover_text("Exemples : *.json;*.xml ou src/*.java. * pour tous les fichiers.");
-                        ui.label("Dossier :"); ui.add_sized([field_width, 32.0], egui::TextEdit::singleline(&mut panel.folder));
+                        ui.label("Dossier :"); theme::text_field(ui, &mut panel.folder, field_width);
                         if ui.button("…").clicked() { if let Some(path) = rfd::FileDialog::new().pick_folder() { panel.folder = path.display().to_string(); } } ui.end_row();
                     }
                 });
@@ -488,7 +488,7 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                         ui.add_enabled(panel.scope.is_some(), egui::Checkbox::new(&mut panel.in_selection, "Dans la sélection")); }
                 });
                 ui.group(|ui| {
-                    ui.label("Mode de recherche"); ui.horizontal_wrapped(|ui| {
+                    ui.label("Mode de recherche"); ui.vertical(|ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.radio_value(&mut panel.query.mode, Mode::Normal, "Normal");
                         ui.radio_value(&mut panel.query.mode, Mode::Extended, r"Étendu (\n, \r, \t, \xNN, \uNNNN…)");
@@ -502,29 +502,29 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                 ui.horizontal_wrapped(|ui| {
                     if panel.tab == Tab::Files {
                         if theme::primary_button(ui,"Trouver tout").clicked() { command = Some(Command::Files(false)); }
-                        if ui.button("Remplacer tout…").clicked() { command = Some(Command::Files(true)); }
+                        if theme::primary_button(ui,"Remplacer tout…").clicked() { command = Some(Command::Files(true)); }
                     } else {
                         if theme::primary_button(ui,"Suivant").clicked() { command = Some(Command::Next); }
                         if panel.tab == Tab::Find {
-                            if ui.button("Compter").clicked() { command = Some(Command::Count); }
-                            if ui.button("Rechercher dans le document actuel").clicked() { command = Some(Command::Current); }
-                            if ui.button("Rechercher dans tous les documents ouverts").clicked() { command = Some(Command::AllOpen(false)); }
+                            if theme::primary_button(ui,"Compter").clicked() { command = Some(Command::Count); }
+                            if theme::primary_button(ui,"Rechercher dans le document actuel").clicked() { command = Some(Command::Current); }
+                            if theme::primary_button(ui,"Rechercher dans tous les documents ouverts").clicked() { command = Some(Command::AllOpen(false)); }
                         } else {
-                            if ui.button("Remplacer").clicked() { command = Some(Command::Replace); }
-                            if ui.button("Remplacer tout").clicked() { command = Some(Command::ReplaceAll); }
-                            if ui.button("Remplacer dans tous les documents ouverts").clicked() { command = Some(Command::AllOpen(true)); }
+                            if theme::primary_button(ui,"Remplacer").clicked() { command = Some(Command::Replace); }
+                            if theme::primary_button(ui,"Remplacer tout").clicked() { command = Some(Command::ReplaceAll); }
+                            if theme::primary_button(ui,"Remplacer dans tous les documents ouverts").clicked() { command = Some(Command::AllOpen(true)); }
                         }
                     }
                 });
             });
-            if busy { ui.horizontal(|ui| { ui.spinner(); ui.label("Traitement en cours…"); if ui.button("Annuler le traitement").clicked() { command = Some(Command::Cancel); } }); }
+            if busy { ui.horizontal(|ui| { ui.spinner(); ui.label("Traitement en cours…"); if theme::primary_button(ui,"Annuler le traitement").clicked() { command = Some(Command::Cancel); } }); }
             if let Some((count, files)) = panel.report.as_ref().map(|r| (r.count, r.plan.len())) {
                 ui.group(|ui| {
                     ui.label(format!("Confirmer {count} remplacement(s) dans {files} fichier(s) sur disque ?"));
                     ui.label("Les fichiers ouverts dans MPTE seront ignorés. Les autres modifications seront enregistrées immédiatement.");
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(!busy, egui::Button::new("Confirmer les remplacements")).clicked() { command = Some(Command::Confirm); }
-                        if ui.button("Abandonner").clicked() { panel.report = None; }
+                        if ui.add_enabled_ui(!busy,|ui| theme::primary_button(ui,"Confirmer les remplacements")).inner.clicked() { command = Some(Command::Confirm); }
+                        if theme::primary_button(ui,"Abandonner").clicked() { panel.report = None; }
                     });
                 });
             }
@@ -541,7 +541,7 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                     }
                 });
             }
-            if ui.button("Fermer").clicked() { panel.open = false; }
+            if theme::primary_button(ui,"Fermer").clicked() { panel.open = false; }
         });
     if previous
         != (

@@ -4,6 +4,7 @@ use syntect::highlighting::{Color, StyleModifier, Theme, ThemeItem, ThemeSetting
 pub const BACKGROUND: Color32 = Color32::from_rgb(247, 249, 252);
 pub const TOOLBAR: Color32 = Color32::from_rgb(242, 245, 249);
 pub const BORDER: Color32 = Color32::from_rgb(218, 225, 235);
+pub const INPUT_BORDER: Color32 = Color32::from_rgb(154, 170, 191);
 pub const TEXT: Color32 = Color32::from_rgb(36, 45, 58);
 pub const MUTED: Color32 = Color32::from_rgb(88, 103, 124);
 pub const BLUE: Color32 = Color32::from_rgb(35, 89, 181);
@@ -347,6 +348,30 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str) -> Response {
             .fill(BLUE_LIGHT)
             .stroke(Stroke::NONE)
             .corner_radius(8)
+            .wrap_mode(egui::TextWrapMode::Extend)
             .min_size(vec2(96.0, 36.0)),
     )
+}
+
+pub fn text_field(ui: &mut egui::Ui, value: &mut String, width: f32) -> Response {
+    let field = egui::Frame::NONE
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, INPUT_BORDER))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.add_sized(
+                [(width - 22.0).max(80.0), 22.0],
+                egui::TextEdit::singleline(value).frame(false),
+            )
+        });
+    if field.inner.has_focus() {
+        ui.painter().rect_stroke(
+            field.response.rect,
+            8.0,
+            Stroke::new(1.5, BLUE),
+            egui::StrokeKind::Inside,
+        );
+    }
+    field.inner
 }
