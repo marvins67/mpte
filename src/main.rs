@@ -1,5 +1,7 @@
 mod document;
+mod editor;
 mod formatter;
+mod outline;
 mod search;
 mod search_ui;
 
@@ -439,109 +441,19 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         }
         let doc = state.docs.get_mut(&id).unwrap();
         doc.format_on_save = format_on_save;
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::both()
-                .id_salt(("editor", id))
-                .show(ui, |ui| {
-                    ui.horizontal_top(|ui| {
-                        let line_height = ui.fonts(|f| f.row_height(&FontId::monospace(14.0)));
-                        let lines = doc.text.split('\n').count();
-                        let width = (lines.to_string().len() as f32 * 9.0 + 16.0).max(40.0);
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(width, lines as f32 * line_height + 8.0),
-                            egui::Sense::hover(),
-                        );
-                        let clip = rect.intersect(ui.clip_rect());
-                        if clip.is_positive() {
-                            let first = ((clip.top() - rect.top() - 4.0) / line_height)
-                                .floor()
-                                .max(0.0) as usize;
-                            let last = (((clip.bottom() - rect.top()) / line_height).ceil()
-                                as usize)
-                                .min(lines);
-                            for index in first..last {
-                                let y = rect.top() + 2.0 + index as f32 * line_height;
-                                ui.painter().text(
-                                    egui::pos2(rect.right() - 8.0, y),
-                                    egui::Align2::RIGHT_TOP,
-                                    (index + 1).to_string(),
-                                    FontId::monospace(14.0),
-                                    ui.visuals().weak_text_color(),
-                                );
-                            }
-                        }
-                        let mut layouter = |ui: &egui::Ui, text: &str, _wrap: f32| {
-                            let job = if text == job.text {
-                                job.clone()
-                            } else {
-                                egui::text::LayoutJob::simple(
-                                    text.to_owned(),
-                                    FontId::monospace(14.0),
-                                    ui.visuals().text_color(),
-                                    f32::INFINITY,
-                                )
-                            };
-                            ui.fonts(|f| f.layout_job(job))
-                        };
-                        let editor_id = egui::Id::new(("text", id));
-                        let jump = window.jump.take().filter(|(did, range)| {
-                            *did == id
-                                && range.end <= doc.text.len()
-                                && doc.text.is_char_boundary(range.start)
-                                && doc.text.is_char_boundary(range.end)
-                        });
-                        if let Some((_, range)) = &jump {
-                            if range.end <= doc.text.len()
-                                && doc.text.is_char_boundary(range.start)
-                                && doc.text.is_char_boundary(range.end)
-                            {
-                                let start = doc.text[..range.start].chars().count();
-                                let end = doc.text[..range.end].chars().count();
-                                let mut edit =
-                                    egui::TextEdit::load_state(ctx, editor_id).unwrap_or_default();
-                                edit.cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(start),
-                                        egui::text::CCursor::new(end),
-                                    )));
-                                edit.store(ctx, editor_id);
-                            }
-                        }
-                        let output = egui::TextEdit::multiline(&mut doc.text)
-                            .id(editor_id)
-                            .font(FontId::monospace(14.0))
-                            .code_editor()
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(lines.max(30))
-                            .layouter(&mut layouter)
-                            .show(ui);
-                        if let Some(range) = output.state.cursor.char_range() {
-                            let char_to_byte = |n| {
-                                doc.text
-                                    .char_indices()
-                                    .nth(n)
-                                    .map_or(doc.text.len(), |(i, _)| i)
-                            };
-                            let a = char_to_byte(range.primary.index);
-                            let b = char_to_byte(range.secondary.index);
-                            window.selection = a.min(b)..a.max(b);
-                        }
-                        if let Some((_, range)) = jump {
-                            let c = egui::text::CCursor::new(
-                                doc.text.get(..range.start).unwrap_or("").chars().count(),
-                            );
-                            let rect = output
-                                .galley
-                                .pos_from_ccursor(c)
-                                .translate(output.galley_pos.to_vec2());
-                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                        }
-                        if output.response.changed() {
-                            doc.revision += 1;
-                        }
-                    });
-                });
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(Color32::WHITE))
+            .show(ctx, |ui| {
+                editor::show(
+                    ctx,
+                    ui,
+                    id,
+                    doc,
+                    job,
+                    &mut window.selection,
+                    &mut window.jump,
+                );
+            });
     } else {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.centered_and_justified(|ui| {

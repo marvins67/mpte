@@ -8,6 +8,9 @@ Rust + egui/eframe, rendu OpenGL, sans navigateur embarqué. Interface en franç
 - Plusieurs fichiers dans des onglets ; un onglet peut être détaché dans une fenêtre indépendante.
 - Ouverture multiple, glisser-déposer, fichiers passés en arguments, nouveau document, enregistrer et enregistrer sous.
 - Numéros de ligne, coloration JSON, XML, HTML et Java suivant l’extension.
+- Ligne du curseur surlignée, parenthèses/crochets/accolades associés en rouge.
+- Repliement des blocs avec boutons +/− dans la marge et guides de niveaux.
+- Zone d’édition étendue à toute la largeur et toute la hauteur disponibles.
 - Boîte de recherche à trois onglets, accessible par Cmd+F et le bouton Rechercher.
 - Formatage à la demande ou à l’enregistrement (case propre à chaque document, désactivée initialement).
 - Confirmation avant fermeture des documents modifiés, annuler/rétablir via le composant de texte.
@@ -94,6 +97,18 @@ opération : utiliser le remplacement dans tous les documents ouverts pour ceux-
 Les changements externes sont détectés avant chaque écriture. Le plan est limité
 à 100 Mio de texte ; une annulation ou une erreur ne revient pas sur les fichiers
 déjà enregistrés. Le détail des erreurs est affiché dans le dialogue.
+
+## Navigation dans les blocs
+
+Les boutons − et + de la marge ferment et ouvrent les blocs multilignes. Les
+numéros de ligne restent ceux du fichier original. Les délimiteurs `{}`, `[]`
+et `()` sont associés en ignorant les chaînes et commentaires courants ; les
+balises XML/HTML multilignes peuvent également être repliées.
+
+Le repliement est propre à chaque document et conserve son texte complet :
+enregistrement, copie, recherche et remplacement portent toujours sur le contenu
+intégral. Une recherche ou un déplacement du curseur dans une partie masquée
+la déplie automatiquement. Une modification du texte réinitialise les replis.
 
 ## Application macOS
 
