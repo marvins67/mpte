@@ -514,15 +514,22 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         let mut proceed = dirty.is_empty();
         if !proceed {
             egui::Window::new("Modifications non enregistrées")
+                .title_bar(false)
+                .frame(theme::dialog_frame())
+                .default_width(560.0)
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
+                    if theme::dialog_header(ui, theme::Icon::File, "Modifications non enregistrées")
+                    {
+                        window.closing = None;
+                    }
                     ui.label("Enregistrer les documents modifiés avant de fermer ?");
                     for id in &dirty {
                         ui.label(state.docs[id].title());
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Enregistrer et fermer").clicked() {
+                        if theme::primary_button(ui, "Enregistrer et fermer").clicked() {
                             proceed = dirty.iter().all(|id| state.save(*id, false));
                         }
                         if ui.button("Ne pas enregistrer").clicked() {
@@ -559,13 +566,36 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
     }
     if let Some(error) = state.error.clone() {
         egui::Window::new("MPTE — erreur")
+            .id(egui::Id::new(("error-dialog", window_id)))
+            .title_bar(false)
+            .frame(theme::dialog_frame())
+            .default_width(500.0)
+            .max_width((ctx.screen_rect().width() - 24.0).max(300.0))
             .collapsible(false)
+            .resizable(false)
             .show(ctx, |ui| {
-                ui.set_max_width(560.0);
-                ui.label(error);
-                if ui.button("OK").clicked() {
+                if theme::dialog_header(ui, theme::Icon::File, "Une erreur est survenue") {
                     state.error = None;
                 }
+                egui::Frame::NONE
+                    .fill(theme::BACKGROUND)
+                    .corner_radius(8)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .show(ui, |ui| {
+                                ui.add(egui::Label::new(error).wrap());
+                            });
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::primary_button(ui, "OK").clicked() {
+                            state.error = None;
+                        }
+                    });
+                });
             });
     }
     if !remove_window {

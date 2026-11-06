@@ -1,6 +1,7 @@
 use super::{EditorWindow, Id, State};
 use crate::editor::record_undo;
 use crate::search::{self, FileHit, FileOptions, Hit, Mode, Pattern, Query, Report};
+use crate::theme;
 use eframe::egui;
 use std::{
     ops::Range,
@@ -370,9 +371,10 @@ fn history_field(
     label: &str,
     value: &mut String,
     history: &[String],
+    width: f32,
 ) -> egui::Response {
     ui.label(label);
-    let response = ui.add_sized([360.0, 20.0], egui::TextEdit::singleline(value));
+    let response = ui.add_sized([width, 32.0], egui::TextEdit::singleline(value));
     egui::ComboBox::from_id_salt(label)
         .width(20.0)
         .selected_text("")
@@ -453,31 +455,41 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
     let mut clicked = None;
     let busy = panel.job.is_some();
     egui::Window::new("Rechercher").id(egui::Id::new(("search-dialog", wid)))
-        .open(&mut open).default_width(620.0).resizable(true).collapsible(false).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut panel.tab, Tab::Find, "Rechercher");
-                ui.selectable_value(&mut panel.tab, Tab::Replace, "Remplacer");
-                ui.selectable_value(&mut panel.tab, Tab::Files, "Rechercher dans les fichiers");
-            }); ui.separator();
+        .open(&mut open).title_bar(false).frame(theme::dialog_frame())
+        .default_width(660.0).max_width((ctx.screen_rect().width()-24.0).max(320.0))
+        .resizable(true).collapsible(false).show(ctx, |ui| {
+            if theme::dialog_header(ui,theme::Icon::Search,"Rechercher") { panel.open = false; }
+            egui::Frame::NONE.fill(theme::BACKGROUND).stroke(egui::Stroke::new(1.0,theme::BORDER)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.horizontal_wrapped(|ui| {
+                    for (tab,label) in [(Tab::Find,"Rechercher"),(Tab::Replace,"Remplacer"),(Tab::Files,"Rechercher dans les fichiers")] {
+                        if theme::dialog_tab(ui,label,panel.tab == tab).clicked() { panel.tab = tab; }
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            let field_width = (ui.available_width()-180.0).clamp(150.0,360.0);
             ui.add_enabled_ui(!busy, |ui| {
                 egui::Grid::new(("search-fields", wid)).num_columns(3).show(ui, |ui| {
-                    let response = history_field(ui, "Recherche :", &mut panel.query.needle, &panel.history);
+                    let response = history_field(ui, "Recherche :", &mut panel.query.needle, &panel.history, field_width);
                     if panel.focus { response.request_focus(); panel.focus = false; }
-                    if panel.tab != Tab::Find { history_field(ui, "Remplacer par :", &mut panel.query.replacement, &panel.replacements); }
+                    if panel.tab != Tab::Find { history_field(ui, "Remplacer par :", &mut panel.query.replacement, &panel.replacements, field_width); }
                     if panel.tab == Tab::Files {
-                        history_field(ui, "Filtres :", &mut panel.filters, &[]).on_hover_text("Exemples : *.json;*.xml ou src/*.java. * pour tous les fichiers.");
-                        ui.label("Dossier :"); ui.add_sized([360.0, 20.0], egui::TextEdit::singleline(&mut panel.folder));
+                        history_field(ui, "Filtres :", &mut panel.filters, &[], field_width).on_hover_text("Exemples : *.json;*.xml ou src/*.java. * pour tous les fichiers.");
+                        ui.label("Dossier :"); ui.add_sized([field_width, 32.0], egui::TextEdit::singleline(&mut panel.folder));
                         if ui.button("…").clicked() { if let Some(path) = rfd::FileDialog::new().pick_folder() { panel.folder = path.display().to_string(); } } ui.end_row();
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.checkbox(&mut panel.query.word, "Mot entier uniquement"); ui.checkbox(&mut panel.query.case, "Respecter la casse");
                     if panel.tab == Tab::Files { ui.checkbox(&mut panel.recursive, "Sous-dossiers"); ui.checkbox(&mut panel.hidden, "Dossiers et fichiers cachés"); }
                     else { ui.checkbox(&mut panel.backward, "Rechercher vers l’arrière"); ui.checkbox(&mut panel.wrap, "Boucler");
-                        ui.add_enabled_ui(panel.scope.is_some(), |ui| { ui.checkbox(&mut panel.in_selection, "Dans la sélection"); }); }
+                        ui.add_enabled(panel.scope.is_some(), egui::Checkbox::new(&mut panel.in_selection, "Dans la sélection")); }
                 });
                 ui.group(|ui| {
                     ui.label("Mode de recherche"); ui.horizontal_wrapped(|ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.radio_value(&mut panel.query.mode, Mode::Normal, "Normal");
                         ui.radio_value(&mut panel.query.mode, Mode::Extended, r"Étendu (\n, \r, \t, \xNN, \uNNNN…)");
                         ui.radio_value(&mut panel.query.mode, Mode::Regex, "Expression régulière");
@@ -489,10 +501,10 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                 });
                 ui.horizontal_wrapped(|ui| {
                     if panel.tab == Tab::Files {
-                        if ui.button("Trouver tout").clicked() { command = Some(Command::Files(false)); }
+                        if theme::primary_button(ui,"Trouver tout").clicked() { command = Some(Command::Files(false)); }
                         if ui.button("Remplacer tout…").clicked() { command = Some(Command::Files(true)); }
                     } else {
-                        if ui.button("Suivant").clicked() { command = Some(Command::Next); }
+                        if theme::primary_button(ui,"Suivant").clicked() { command = Some(Command::Next); }
                         if panel.tab == Tab::Find {
                             if ui.button("Compter").clicked() { command = Some(Command::Count); }
                             if ui.button("Rechercher dans le document actuel").clicked() { command = Some(Command::Current); }
@@ -516,7 +528,11 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                     });
                 });
             }
-            ui.label(&panel.message);
+            if !panel.message.is_empty() {
+                egui::Frame::NONE.fill(theme::BACKGROUND).corner_radius(8).inner_margin(10).show(ui, |ui| {
+                    ui.label(egui::RichText::new(&panel.message).color(theme::MUTED));
+                });
+            }
             if !panel.errors.is_empty() { ui.collapsing(format!("{} problème(s)", panel.errors.len()), |ui| { for error in &panel.errors { ui.label(error); } }); }
             if !panel.results.is_empty() {
                 egui::ScrollArea::vertical().id_salt("search-results").max_height(220.0).show(ui, |ui| {

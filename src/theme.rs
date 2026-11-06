@@ -9,7 +9,7 @@ pub const MUTED: Color32 = Color32::from_rgb(88, 103, 124);
 pub const BLUE: Color32 = Color32::from_rgb(35, 89, 181);
 pub const BLUE_LIGHT: Color32 = Color32::from_rgb(232, 240, 255);
 pub const CURRENT_LINE: Color32 = Color32::from_rgb(238, 243, 253);
-pub const EDITOR_FONT_SIZE: f32 = 15.0;
+pub const EDITOR_FONT_SIZE: f32 = 14.0;
 
 pub fn install(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
@@ -33,6 +33,9 @@ pub fn install(ctx: &egui::Context) {
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, BORDER);
     style.visuals.widgets.active.weak_bg_fill = BLUE_LIGHT;
     style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, BLUE);
+    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
+    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
+    style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
     style.spacing.item_spacing = vec2(10.0, 8.0);
     style.spacing.button_padding = vec2(12.0, 7.0);
     style.spacing.interact_size = vec2(32.0, 30.0);
@@ -270,4 +273,80 @@ pub fn panel_frame(fill: Color32) -> egui::Frame {
         .fill(fill)
         .inner_margin(egui::Margin::symmetric(16, 8))
         .stroke(Stroke::new(1.0, BORDER))
+}
+
+pub fn dialog_frame() -> egui::Frame {
+    egui::Frame::window(&egui::Style::default())
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, BORDER))
+        .corner_radius(12)
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 5],
+            blur: 18,
+            spread: 0,
+            color: Color32::from_black_alpha(35),
+        })
+        .inner_margin(16)
+}
+pub fn dialog_header(ui: &mut egui::Ui, kind: Icon, title: &str) -> bool {
+    let mut close = false;
+    egui::Frame::NONE
+        .fill(TOOLBAR)
+        .corner_radius(8)
+        .inner_margin(12)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
+                icon(ui, rect, kind, BLUE);
+                ui.label(egui::RichText::new(title).size(19.0).strong().color(TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = button(ui, Icon::Close, "", false)
+                        .on_hover_text("Fermer")
+                        .clicked();
+                });
+            });
+        });
+    ui.add_space(8.0);
+    close
+}
+pub fn dialog_tab(ui: &mut egui::Ui, label: &str, selected: bool) -> Response {
+    let color = if selected { BLUE } else { MUTED };
+    let text = ui.fonts(|f| f.layout_no_wrap(label.into(), FontId::proportional(16.0), color));
+    let (rect, response) = ui.allocate_exact_size(vec2(text.size().x + 26.0, 40.0), Sense::click());
+    ui.painter().rect_filled(
+        rect,
+        0.0,
+        if selected {
+            Color32::WHITE
+        } else if response.hovered() {
+            BLUE_LIGHT
+        } else {
+            BACKGROUND
+        },
+    );
+    ui.painter().galley(
+        pos2(rect.left() + 13.0, rect.center().y - text.size().y / 2.0),
+        text,
+        color,
+    );
+    if selected {
+        ui.painter().rect_filled(
+            Rect::from_min_max(pos2(rect.left(), rect.bottom() - 3.0), rect.right_bottom()),
+            0.0,
+            BLUE,
+        );
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response
+}
+pub fn primary_button(ui: &mut egui::Ui, label: &str) -> Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).color(BLUE))
+            .fill(BLUE_LIGHT)
+            .stroke(Stroke::NONE)
+            .corner_radius(8)
+            .min_size(vec2(96.0, 36.0)),
+    )
 }
