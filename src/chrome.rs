@@ -12,86 +12,123 @@ pub fn toolbar(
 ) {
     egui::TopBottomPanel::top("toolbar")
         .show_separator_line(false)
-        .exact_height(62.0)
-        .frame(theme::panel_frame(theme::TOOLBAR))
+        .exact_height(44.0)
+        .frame(theme::panel_frame(theme::TOOLBAR).inner_margin(egui::Margin::symmetric(10, 5)))
         .show(ctx, |ui| {
-            let compact = ui.available_width() < 740.0;
-            ui.horizontal_centered(|ui| {
-                for (icon, label, action, shortcut) in [
-                    (Icon::New, "Nouveau", Action::New, "Cmd/Ctrl+N"),
-                    (Icon::Folder, "Ouvrir", Action::Open, "Cmd/Ctrl+O"),
-                    (Icon::Save, "Enregistrer", Action::Save(false), "Cmd/Ctrl+S"),
-                ] {
-                    if theme::button(ui, icon, if compact { "" } else { label }, false)
-                        .on_hover_text(format!("{label} · {shortcut}"))
-                        .clicked()
-                    {
-                        actions.push(action);
-                    }
-                }
-                let (divider, _) = ui.allocate_exact_size(vec2(2.0, 24.0), Sense::hover());
-                ui.painter().line_segment(
-                    [divider.center_top(), divider.center_bottom()],
-                    Stroke::new(1.0, theme::BORDER),
-                );
-                if theme::button(
-                    ui,
+            let buttons = [
+                (
+                    Icon::New,
+                    "Nouveau",
+                    "Nouveau · Cmd/Ctrl+N",
+                    Some(Action::New),
+                ),
+                (
+                    Icon::Folder,
+                    "Ouvrir",
+                    "Ouvrir · Cmd/Ctrl+O",
+                    Some(Action::Open),
+                ),
+                (
+                    Icon::Save,
+                    "Enregistrer",
+                    "Enregistrer · Cmd/Ctrl+S",
+                    Some(Action::Save(false)),
+                ),
+                (
+                    Icon::SaveAs,
+                    "Enreg. sous…",
+                    "Enregistrer sous… · Cmd/Ctrl+Maj+S",
+                    Some(Action::Save(true)),
+                ),
+                (
                     Icon::Format,
-                    if compact { "" } else { "Formater" },
-                    false,
+                    "Formater",
+                    "Formater · Cmd/Ctrl+Maj+F",
+                    Some(Action::Format),
+                ),
+                (
+                    Icon::NewWindow,
+                    "Fenêtre",
+                    "Nouvelle fenêtre · Cmd/Ctrl+Maj+N",
+                    Some(Action::NewWindow),
+                ),
+                (
+                    Icon::Detach,
+                    "Détacher",
+                    "Détacher l’onglet",
+                    Some(Action::Detach),
+                ),
+                (
+                    Icon::Close,
+                    "Fermer",
+                    "Fermer l’onglet · Cmd/Ctrl+W",
+                    window
+                        .tabs
+                        .get(window.active)
+                        .map(|&id| Action::Close(Close::Tab(id))),
+                ),
+                (
+                    Icon::Search,
+                    "Rechercher",
+                    "Rechercher rapidement",
+                    Some(Action::QuickFind),
+                ),
+                (
+                    Icon::Settings,
+                    "Avancée…",
+                    "Recherche avancée… · Cmd/Ctrl+F",
+                    Some(Action::Find),
+                ),
+                (
+                    Icon::Quit,
+                    "Quitter",
+                    "Quitter MPTE · Cmd/Ctrl+Q",
+                    Some(Action::Close(Close::Quit)),
+                ),
+            ];
+            let primary = |icon| {
+                matches!(
+                    icon,
+                    Icon::New | Icon::Folder | Icon::Save | Icon::Format | Icon::Search
                 )
-                .on_hover_text("Formater · Cmd/Ctrl+Maj+F")
-                .clicked()
-                {
-                    actions.push(Action::Format);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button_frame = ui.visuals().button_frame;
-                    ui.visuals_mut().button_frame = false;
-                    let menu = ui.menu_button("     ", |ui| {
-                        if ui
-                            .add_enabled(
-                                window.tabs.get(window.active).is_some(),
-                                egui::Button::new("Fermer l’onglet"),
+            };
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let fits = |show_label: fn(Icon) -> bool| {
+                let width = buttons
+                    .iter()
+                    .map(|(icon, label, _, _)| {
+                        theme::toolbar_button_width(ui, if show_label(*icon) { label } else { "" })
+                    })
+                    .sum::<f32>()
+                    + (buttons.len() - 1) as f32 * ui.spacing().item_spacing.x;
+                width <= ui.available_width()
+            };
+            let show_all = fits(|_| true);
+            let show_primary = show_all || fits(primary);
+
+            ui.horizontal_centered(|ui| {
+                for (icon, label, tooltip, action) in buttons {
+                    let caption = if show_all || show_primary && primary(icon) {
+                        label
+                    } else {
+                        ""
+                    };
+                    let response = ui
+                        .add_enabled_ui(action.is_some(), |ui| {
+                            theme::toolbar_button(
+                                ui,
+                                icon,
+                                caption,
+                                tooltip,
+                                matches!(icon, Icon::Search),
                             )
-                            .clicked()
-                        {
-                            if let Some(id) = window.tabs.get(window.active) {
-                                actions.push(Action::Close(Close::Tab(*id)));
-                            }
-                            ui.close_menu();
-                        }
-                        for (label, action) in [
-                            ("Enregistrer sous…", Action::Save(true)),
-                            ("Nouvelle fenêtre", Action::NewWindow),
-                            ("Détacher l’onglet", Action::Detach),
-                            ("Recherche avancée…", Action::Find),
-                            ("Quitter MPTE", Action::Close(Close::Quit)),
-                        ] {
-                            if ui.button(label).clicked() {
-                                actions.push(action);
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                    ui.visuals_mut().button_frame = button_frame;
-                    theme::icon(
-                        ui,
-                        Rect::from_center_size(menu.response.rect.center(), vec2(22.0, 22.0)),
-                        Icon::More,
-                        theme::TEXT,
-                    );
-                    menu.response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Autres actions")
-                    });
-                    menu.response.on_hover_text("Autres actions");
-                    if theme::button(ui, Icon::Search, "Rechercher", true)
-                        .on_hover_text("Recherche rapide · Options avancées avec Cmd/Ctrl+F")
-                        .clicked()
-                    {
-                        actions.push(Action::QuickFind);
+                        })
+                        .inner
+                        .on_hover_text(tooltip);
+                    if response.clicked() {
+                        actions.extend(action);
                     }
-                });
+                }
             });
         });
     egui::TopBottomPanel::top("tabs")

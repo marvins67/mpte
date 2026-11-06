@@ -12,7 +12,7 @@ Rust + egui/eframe, rendu OpenGL, sans navigateur embarqué. Interface en franç
 - Repliement des blocs avec boutons +/− dans la marge et guides de niveaux.
 - Sélection rectangulaire avec Alt/Option + glisser, copie et édition en colonnes.
 - Zone d’édition étendue à toute la largeur et toute la hauteur disponibles.
-- Interface claire avec icônes, onglets soulignés en bleu et menu « … » pour les actions secondaires.
+- Interface claire avec une barre d’outils compacte et des onglets soulignés en bleu.
 - Recherche rapide intégrée et boîte de recherche avancée à trois onglets, accessible par Cmd+F.
 - Formatage à la demande ou à l’enregistrement (case propre à chaque document, désactivée initialement).
 - Confirmation avant fermeture des documents modifiés, annuler/rétablir via le composant de texte.
@@ -111,12 +111,14 @@ Les changements externes sont détectés avant chaque écriture. Le plan est lim
 à 100 Mio de texte ; une annulation ou une erreur ne revient pas sur les fichiers
 déjà enregistrés. Le détail des erreurs est affiché dans le dialogue.
 
-Le menu **…** regroupe Enregistrer sous, Nouvelle fenêtre, Détacher l’onglet,
-Recherche avancée, Fermer l’onglet et Quitter. Un clic droit sur un onglet permet
-aussi de le détacher ; le bouton de fermeture et le clic du milieu ferment l’onglet.
+La barre d’outils donne aussi accès à Enregistrer sous, Nouvelle fenêtre, Détacher
+l’onglet, Fermer l’onglet, Recherche avancée et Quitter. Si la fenêtre rétrécit,
+les libellés disparaissent progressivement. Toutes les commandes restent accessibles
+par leur icône, avec une info-bulle au survol. Un clic droit sur un onglet permet
+aussi de le détacher. Le bouton de fermeture et le clic du milieu ferment l’onglet.
 La barre d’état réunit ligne/colonne, nombre de lignes, formatage à l’enregistrement,
-encodage et type de fichier. La barre d’outils passe aux icônes seules si la fenêtre
-est étroite. Les commandes de fenêtre restent celles du système d’exploitation.
+encodage et type de fichier. Les commandes de fenêtre restent celles du système
+d’exploitation.
 
 ## Navigation dans les blocs
 

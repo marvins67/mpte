@@ -94,9 +94,12 @@ pub enum Icon {
     New,
     Folder,
     Save,
+    SaveAs,
+    NewWindow,
+    Detach,
+    Quit,
     Format,
     Search,
-    More,
     File,
     Code,
     Up,
@@ -134,11 +137,6 @@ pub fn icon(ui: &egui::Ui, rect: Rect, kind: Icon, color: Color32) {
         }
         Icon::Down => {
             path(&[(0.22, 0.35), (0.5, 0.65), (0.78, 0.35)]);
-        }
-        Icon::More => {
-            for x in [0.15, 0.5, 0.85] {
-                ui.painter().circle_filled(p(x, 0.5), 1.7, color);
-            }
         }
         Icon::Format => {
             for (y, end) in [(0.2, 0.95), (0.5, 0.7), (0.8, 0.8)] {
@@ -181,6 +179,53 @@ pub fn icon(ui: &egui::Ui, rect: Rect, kind: Icon, color: Color32) {
             path(&[(0.25, 0.05), (0.25, 0.38), (0.72, 0.38), (0.72, 0.05)]);
             path(&[(0.25, 0.95), (0.25, 0.6), (0.75, 0.6), (0.75, 0.95)]);
         }
+        Icon::SaveAs => {
+            path(&[
+                (0.92, 0.43),
+                (0.92, 0.25),
+                (0.72, 0.05),
+                (0.05, 0.05),
+                (0.05, 0.95),
+                (0.5, 0.95),
+            ]);
+            path(&[(0.25, 0.05), (0.25, 0.38), (0.7, 0.38), (0.7, 0.05)]);
+            path(&[
+                (0.54, 0.95),
+                (0.6, 0.72),
+                (0.88, 0.44),
+                (1.0, 0.56),
+                (0.72, 0.84),
+                (0.54, 0.95),
+            ]);
+        }
+        Icon::NewWindow => {
+            path(&[
+                (0.9, 0.54),
+                (0.9, 0.1),
+                (0.06, 0.1),
+                (0.06, 0.85),
+                (0.54, 0.85),
+            ]);
+            path(&[(0.06, 0.31), (0.9, 0.31)]);
+            path(&[(0.61, 0.79), (1.0, 0.79)]);
+            path(&[(0.81, 0.6), (0.81, 0.98)]);
+        }
+        Icon::Detach => {
+            path(&[
+                (0.44, 0.16),
+                (0.06, 0.16),
+                (0.06, 0.95),
+                (0.85, 0.95),
+                (0.85, 0.56),
+            ]);
+            path(&[(0.45, 0.55), (0.94, 0.06)]);
+            path(&[(0.61, 0.06), (0.94, 0.06), (0.94, 0.39)]);
+        }
+        Icon::Quit => {
+            path(&[(0.47, 0.07), (0.09, 0.07), (0.09, 0.93), (0.47, 0.93)]);
+            path(&[(0.37, 0.5), (0.96, 0.5)]);
+            path(&[(0.72, 0.26), (0.96, 0.5), (0.72, 0.74)]);
+        }
         Icon::New | Icon::File => {
             path(&[
                 (0.7, 0.95),
@@ -208,16 +253,93 @@ pub fn icon(ui: &egui::Ui, rect: Rect, kind: Icon, color: Color32) {
         }
     }
 }
+struct ButtonMetrics {
+    font_size: f32,
+    height: f32,
+    icon_size: f32,
+    icon_x: f32,
+    text_x: f32,
+    extra_width: f32,
+    icon_only_width: f32,
+}
+
+const STANDARD_BUTTON: ButtonMetrics = ButtonMetrics {
+    font_size: 16.0,
+    height: 38.0,
+    icon_size: 22.0,
+    icon_x: 19.0,
+    text_x: 37.0,
+    extra_width: 52.0,
+    icon_only_width: 36.0,
+};
+
+const TOOLBAR_BUTTON: ButtonMetrics = ButtonMetrics {
+    font_size: 13.0,
+    height: 30.0,
+    icon_size: 19.0,
+    icon_x: 15.0,
+    text_x: 27.0,
+    extra_width: 32.0,
+    icon_only_width: 30.0,
+};
+
+impl ButtonMetrics {
+    fn width(&self, label: &str, text_width: f32) -> f32 {
+        if label.is_empty() {
+            self.icon_only_width
+        } else {
+            text_width + self.extra_width
+        }
+    }
+
+    fn text(&self, ui: &egui::Ui, label: &str, color: Color32) -> std::sync::Arc<egui::Galley> {
+        ui.fonts(|fonts| {
+            fonts.layout_no_wrap(label.into(), FontId::proportional(self.font_size), color)
+        })
+    }
+}
+
+pub fn toolbar_button_width(ui: &egui::Ui, label: &str) -> f32 {
+    TOOLBAR_BUTTON.width(label, TOOLBAR_BUTTON.text(ui, label, MUTED).size().x)
+}
+
+pub fn toolbar_button(
+    ui: &mut egui::Ui,
+    kind: Icon,
+    label: &str,
+    accessible_label: &str,
+    accent: bool,
+) -> Response {
+    icon_button(ui, kind, label, accessible_label, accent, &TOOLBAR_BUTTON)
+}
+
 pub fn button(ui: &mut egui::Ui, kind: Icon, label: &str, accent: bool) -> Response {
-    let font = FontId::proportional(16.0);
-    let text =
-        ui.fonts(|f| f.layout_no_wrap(label.into(), font, if accent { BLUE } else { MUTED }));
-    let width = if label.is_empty() {
-        36.0
+    let accessible_label = if label.is_empty() {
+        match kind {
+            Icon::Up => "Occurrence précédente",
+            Icon::Down => "Occurrence suivante",
+            Icon::Settings => "Options avancées",
+            Icon::Close => "Fermer",
+            _ => "",
+        }
     } else {
-        text.size().x + 52.0
+        label
     };
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 38.0), Sense::click());
+    icon_button(ui, kind, label, accessible_label, accent, &STANDARD_BUTTON)
+}
+
+fn icon_button(
+    ui: &mut egui::Ui,
+    kind: Icon,
+    label: &str,
+    accessible_label: &str,
+    accent: bool,
+    metrics: &ButtonMetrics,
+) -> Response {
+    let color = if accent { BLUE } else { MUTED };
+    let text = metrics.text(ui, label, color);
+    let width = metrics.width(label, text.size().x);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, metrics.height), Sense::click());
     let fill = if response.hovered() {
         BLUE_LIGHT
     } else if accent {
@@ -232,40 +354,25 @@ pub fn button(ui: &mut egui::Ui, kind: Icon, label: &str, accent: bool) -> Respo
     }
     icon(
         ui,
-        Rect::from_center_size(pos2(rect.left() + 19.0, rect.center().y), vec2(22.0, 22.0)),
+        Rect::from_center_size(
+            pos2(rect.left() + metrics.icon_x, rect.center().y),
+            vec2(metrics.icon_size, metrics.icon_size),
+        ),
         kind,
-        if accent { BLUE } else { MUTED },
+        color,
     );
     if !label.is_empty() {
         ui.painter().galley(
-            pos2(rect.left() + 37.0, rect.center().y - text.size().y / 2.0),
+            pos2(
+                rect.left() + metrics.text_x,
+                rect.center().y - text.size().y / 2.0,
+            ),
             text,
             TEXT,
         );
     }
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            ui.is_enabled(),
-            if label.is_empty() {
-                match kind {
-                    Icon::New => "Nouveau",
-                    Icon::Folder => "Ouvrir",
-                    Icon::Save => "Enregistrer",
-                    Icon::Format => "Formater",
-                    Icon::Search => "Rechercher",
-                    Icon::More => "Autres actions",
-                    Icon::File => "Document",
-                    Icon::Code => "Code",
-                    Icon::Up => "Occurrence précédente",
-                    Icon::Down => "Occurrence suivante",
-                    Icon::Settings => "Options avancées",
-                    Icon::Close => "Fermer",
-                }
-            } else {
-                label
-            },
-        )
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), accessible_label)
     });
     response
 }
