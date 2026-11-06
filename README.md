@@ -10,6 +10,7 @@ Rust + egui/eframe, rendu OpenGL, sans navigateur embarqué. Interface en franç
 - Numéros de ligne, coloration JSON, XML, HTML et Java suivant l’extension.
 - Ligne du curseur surlignée, parenthèses/crochets/accolades associés en rouge.
 - Repliement des blocs avec boutons +/− dans la marge et guides de niveaux.
+- Sélection rectangulaire avec Alt/Option + glisser, copie et édition en colonnes.
 - Zone d’édition étendue à toute la largeur et toute la hauteur disponibles.
 - Boîte de recherche à trois onglets, accessible par Cmd+F et le bouton Rechercher.
 - Formatage à la demande ou à l’enregistrement (case propre à chaque document, désactivée initialement).
@@ -109,6 +110,27 @@ Le repliement est propre à chaque document et conserve son texte complet :
 enregistrement, copie, recherche et remplacement portent toujours sur le contenu
 intégral. Une recherche ou un déplacement du curseur dans une partie masquée
 la déplie automatiquement. Une modification du texte réinitialise les replis.
+
+## Sélection en mode colonne
+
+Maintenir **Alt** (touche **Option ⌥** sur Mac) pendant un glisser de souris dans
+le texte sélectionne un rectangle. Relâcher la touche conserve cette sélection.
+La barre d’état indique le nombre de lignes et de colonnes sélectionnées.
+
+- Cmd+C et Cmd+X copient ou coupent uniquement les colonnes sélectionnées.
+- Saisir du texte remplace le bloc sur chaque ligne. La saisie suivante continue
+  aux mêmes colonnes sur toutes les lignes ; Retour arrière et Suppr y agissent aussi.
+- Coller dans un rectangle répartit un texte multiligne ligne par ligne ; une
+  seule ligne collée se répète sur chaque ligne sélectionnée. Les lignes courtes
+  sont complétées par des espaces lorsque l’insertion le nécessite.
+- Cmd+Z annule les modifications. Échap, un clic normal ou une touche de navigation
+  quitte le mode colonne ; la sélection classique reste disponible sans Alt.
+
+Les tabulations occupent quatre colonnes, comme dans l’éditeur. Une sélection
+partielle d’une tabulation est copiée en espaces. Les caractères composés sont
+préservés et les lignes masquées par le repliement ne font pas partie du rectangle.
+La copie vers une autre application utilise du texte ordinaire, avec une ligne
+par rangée du bloc. Le collage hors d’un rectangle reste un collage de texte normal.
 
 ## Application macOS
 

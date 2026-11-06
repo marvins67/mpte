@@ -1,3 +1,4 @@
+mod column;
 mod document;
 mod editor;
 mod formatter;
@@ -413,6 +414,14 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                 if state.busy.contains(&id) {
                     ui.spinner();
                     ui.label("Formatage…");
+                }
+                if let Some(rectangle) = &doc.column.rectangle {
+                    ui.separator();
+                    ui.label(format!(
+                        "Mode colonne · {} ligne(s) × {} colonne(s)",
+                        rectangle.rows.len(),
+                        rectangle.columns.len()
+                    ));
                 }
             });
         });

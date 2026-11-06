@@ -15,6 +15,7 @@ pub struct Document {
     pub format_on_save: bool,
     pub revision: u64,
     pub view: crate::outline::View,
+    pub column: crate::column::State,
 }
 
 impl Document {
@@ -29,6 +30,7 @@ impl Document {
             format_on_save: false,
             revision: 0,
             view: crate::outline::View::default(),
+            column: crate::column::State::default(),
         }
     }
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -52,6 +54,7 @@ impl Document {
             format_on_save: false,
             revision: 0,
             view: crate::outline::View::default(),
+            column: crate::column::State::default(),
         })
     }
     pub fn dirty(&self) -> bool {

@@ -1,4 +1,5 @@
 use super::{EditorWindow, Id, State};
+use crate::editor::record_undo;
 use crate::search::{self, FileHit, FileOptions, Hit, Mode, Pattern, Query, Report};
 use eframe::egui;
 use std::{
@@ -644,16 +645,6 @@ fn navigate_result(
     }
     ctx.request_repaint();
     Ok(())
-}
-
-fn record_undo(ctx: &egui::Context, id: Id, text: &str) {
-    let editor_id = egui::Id::new(("text", id));
-    let mut state = egui::TextEdit::load_state(ctx, editor_id).unwrap_or_default();
-    let cursor = state.cursor.char_range().unwrap_or_default();
-    let mut undoer = state.undoer();
-    undoer.add_undo(&(cursor, text.to_owned()));
-    state.set_undoer(undoer);
-    state.store(ctx, editor_id);
 }
 
 #[cfg(test)]

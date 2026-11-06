@@ -86,6 +86,7 @@ pub fn show(
 ) {
     let extension = doc.extension();
     doc.view.update(&doc.text, &extension, doc.revision);
+    doc.column.validate(doc.revision);
     let editor_id = egui::Id::new(("text", id));
     let initial_cursor = egui::TextEdit::load_state(ctx, editor_id)
         .and_then(|s| s.cursor.char_range())
@@ -93,6 +94,7 @@ pub fn show(
     let caret = char_to_byte(&doc.text, initial_cursor);
     if let Some((did, range)) = jump.as_ref() {
         if *did == id {
+            doc.column.clear();
             doc.view.reveal(range.clone());
         }
     }
@@ -123,6 +125,7 @@ pub fn show(
     egui::ScrollArea::both()
         .id_salt(("editor", id))
         .auto_shrink([false, false])
+        .drag_to_scroll(false)
         .show(ui, |ui| {
             let viewport = ui.clip_rect();
             let background = ui.painter().add(Shape::Noop);
@@ -224,6 +227,7 @@ pub fn show(
                             );
                         }
                         if response.clicked() {
+                            doc.column.clear();
                             for block in &blocks {
                                 if closed {
                                     doc.view.collapsed.remove(&block.anchor);
@@ -272,6 +276,21 @@ pub fn show(
                         )));
                     edit.store(ctx, editor_id);
                 }
+                let column_layer = ui.painter().add(Shape::Noop);
+                let geometry = folded_galley(ui.fonts(|f| f.layout_job(job.clone())), &visible);
+                crate::column::input(
+                    ctx,
+                    id,
+                    doc,
+                    &crate::column::Geometry {
+                        galley: &geometry,
+                        origin: ui.next_widget_position() + vec2(4.0, 2.0),
+                        clip: viewport,
+                        space,
+                        visible: &visible,
+                        layer: ui.layer_id(),
+                    },
+                );
                 let mut layouter = |ui: &egui::Ui, text: &str, _: f32| {
                     if text == job.text {
                         folded_galley(ui.fonts(|f| f.layout_job(job.clone())), &visible)
@@ -286,8 +305,11 @@ pub fn show(
                         })
                     }
                 };
+                let column_focused =
+                    doc.column.rectangle.is_some() && ctx.memory(|m| m.has_focus(editor_id));
                 let output = egui::TextEdit::multiline(&mut doc.text)
                     .id(editor_id)
+                    .interactive(doc.column.rectangle.is_none())
                     .font(font.clone())
                     .code_editor()
                     .frame(false)
@@ -297,6 +319,50 @@ pub fn show(
                     .desired_rows(1)
                     .layouter(&mut layouter)
                     .show(ui);
+                if doc.column.rectangle.is_some() {
+                    // TextEdit is read-only during rectangular selection; register
+                    // its ID as keyboard-focusable so egui keeps focus across frames.
+                    ui.interact(
+                        output.response.rect,
+                        editor_id,
+                        egui::Sense::focusable_noninteractive(),
+                    );
+                    if column_focused {
+                        ctx.memory_mut(|m| {
+                            m.request_focus(editor_id);
+                            m.set_focus_lock_filter(
+                                editor_id,
+                                egui::EventFilter {
+                                    tab: true,
+                                    horizontal_arrows: true,
+                                    vertical_arrows: true,
+                                    escape: true,
+                                },
+                            );
+                        });
+                    }
+                    if column_focused {
+                        if let Some(range) = output.state.cursor.char_range() {
+                            let cursor_rect = output
+                                .galley
+                                .pos_from_ccursor(range.primary)
+                                .translate(output.galley_pos.to_vec2());
+                            let transform = ctx
+                                .layer_transform_to_global(ui.layer_id())
+                                .unwrap_or_default();
+                            ctx.output_mut(|o| {
+                                o.ime = Some(egui::output::IMEOutput {
+                                    rect: transform * output.response.rect,
+                                    cursor_rect: transform * cursor_rect,
+                                })
+                            });
+                        }
+                    }
+                    if output.response.hovered() {
+                        ctx.set_cursor_icon(egui::CursorIcon::Text);
+                    }
+                }
+                crate::column::paint(ctx, ui, column_layer, doc, &output, space);
                 if let Some(range) = output.state.cursor.char_range() {
                     let a = char_to_byte(&doc.text, range.primary.index);
                     let b = char_to_byte(&doc.text, range.secondary.index);
@@ -369,6 +435,16 @@ pub fn show(
         });
 }
 
+pub(crate) fn record_undo(ctx: &egui::Context, id: Id, text: &str) {
+    let editor_id = egui::Id::new(("text", id));
+    let mut state = egui::TextEdit::load_state(ctx, editor_id).unwrap_or_default();
+    let cursor = state.cursor.char_range().unwrap_or_default();
+    let mut undoer = state.undoer();
+    undoer.add_undo(&(cursor, text.to_owned()));
+    state.set_undoer(undoer);
+    state.store(ctx, editor_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +466,163 @@ mod tests {
             assert_eq!(cursor.rcursor.row, 3);
             assert_eq!(cursor.ccursor.index, text.find('}').unwrap() - 2);
         });
+    }
+    fn column_frame(
+        ctx: &egui::Context,
+        doc: &mut Document,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1100.0, 760.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        let job = egui::text::LayoutJob::simple(
+                            doc.text.clone(),
+                            FontId::monospace(14.0),
+                            Color32::BLACK,
+                            f32::INFINITY,
+                        );
+                        show(ctx, ui, 1, doc, job, &mut (0..0), &mut None);
+                    });
+            },
+        )
+    }
+    fn select_column(ctx: &egui::Context, doc: &mut Document) {
+        column_frame(
+            ctx,
+            doc,
+            vec![egui::Event::PointerButton {
+                pos: pos2(76.0, 8.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::ALT,
+            }],
+        );
+        column_frame(ctx, doc, vec![egui::Event::PointerMoved(pos2(100.0, 40.0))]);
+        column_frame(
+            ctx,
+            doc,
+            vec![egui::Event::PointerButton {
+                pos: pos2(100.0, 40.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::ALT,
+            }],
+        );
+    }
+    #[test]
+    fn alt_drag_copy_replace_and_undo_work_across_frames() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new();
+        doc.text = "ab123cd\nef456gh\nij789kl\n".into();
+        let original = doc.text.clone();
+        column_frame(&ctx, &mut doc, vec![]);
+        select_column(&ctx, &mut doc);
+        assert_eq!(doc.column.rectangle.as_ref().unwrap().columns, 2..5);
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::new(("text", 1_u64)))));
+        let output = column_frame(&ctx, &mut doc, vec![egui::Event::Copy]);
+        assert!(output.platform_output.ime.is_some());
+        assert!(
+            output
+                .platform_output
+                .commands
+                .iter()
+                .any(|c| matches!(c, egui::OutputCommand::CopyText(s) if s == "123\n456\n789"))
+        );
+        column_frame(&ctx, &mut doc, vec![egui::Event::Text("X".into())]);
+        assert_eq!(doc.text, "abXcd\nefXgh\nijXkl\n");
+        column_frame(
+            &ctx,
+            &mut doc,
+            vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: Some(egui::Key::Z),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        );
+        assert_eq!(doc.text, original);
+        assert!(doc.column.rectangle.is_none());
+    }
+    #[test]
+    fn rectangular_paste_and_escape_return_to_normal_editing() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new();
+        doc.text = "ab123cd\nef456gh\nij789kl".into();
+        column_frame(&ctx, &mut doc, vec![]);
+        select_column(&ctx, &mut doc);
+        column_frame(
+            &ctx,
+            &mut doc,
+            vec![egui::Event::Paste("A\r\nB\r\nC".into())],
+        );
+        assert_eq!(doc.text, "abAcd\nefBgh\nijCkl");
+        column_frame(
+            &ctx,
+            &mut doc,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(doc.column.rectangle.is_none());
+        column_frame(&ctx, &mut doc, vec![egui::Event::Text("!".into())]);
+        assert_eq!(doc.text, "abAcd\nefBgh\nijC!kl");
+    }
+    #[test]
+    fn column_typing_accepts_letter_keys_and_ime_commits() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new();
+        doc.text = "ab123cd\nef456gh\nij789kl".into();
+        column_frame(&ctx, &mut doc, vec![]);
+        select_column(&ctx, &mut doc);
+        column_frame(
+            &ctx,
+            &mut doc,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: Some(egui::Key::A),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Text("a".into()),
+            ],
+        );
+        assert_eq!(doc.text, "abacd\nefagh\nijakl");
+        column_frame(
+            &ctx,
+            &mut doc,
+            vec![egui::Event::Ime(egui::ImeEvent::Commit("é".into()))],
+        );
+        assert_eq!(doc.text, "abaécd\nefaégh\nijaékl");
+    }
+    #[test]
+    fn rectangular_cut_copies_only_block_and_preserves_line_structure() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new();
+        doc.text = "ab123cd\nef456gh\nij789kl\n".into();
+        column_frame(&ctx, &mut doc, vec![]);
+        select_column(&ctx, &mut doc);
+        let output = column_frame(&ctx, &mut doc, vec![egui::Event::Cut]);
+        assert_eq!(doc.text, "abcd\nefgh\nijkl\n");
+        assert!(
+            output
+                .platform_output
+                .commands
+                .iter()
+                .any(|c| matches!(c, egui::OutputCommand::CopyText(s) if s == "123\n456\n789"))
+        );
     }
 }
