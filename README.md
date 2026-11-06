@@ -162,6 +162,11 @@ bash scripts/package-macos.sh
 open dist/MPTE.app
 ```
 
+Si le script signale des bibliothèques externes, il indique le chemin du Node.js
+détecté et les bibliothèques concernées. Si tu utilises nvm, lance `nvm install`
+puis `nvm use` depuis la racine du dépôt pour activer la version indiquée dans
+`.nvmrc`, puis relance le script.
+
 Le script embarque l’icône « La ligne active » pour le Finder et le Dock. Sa
 source est `assets/MPTE.svg` et le bundle utilise `assets/MPTE.icns`.
 Le script embarque aussi le binaire Rust, Node et les formateurs pour que le lancement
