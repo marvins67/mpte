@@ -78,7 +78,12 @@ compteur. Les flèches ou Entrée / Maj+Entrée passent à l’occurrence suivan
 précédente. Échap ou la croix ferme la barre. L’icône de réglages ouvre les options
 avancées ; la recherche rapide utilise du texte littéral, sans distinction de casse.
 
-Cmd+F ouvre trois onglets : **Rechercher**, **Remplacer**, **Rechercher dans les fichiers**.
+Cmd+F ouvre un dialogue séparé de l’éditeur, au format compact, avec trois onglets :
+**Rechercher**, **Remplacer**, **Dans les fichiers**. Les champs sont bordés, les
+options et les trois modes restent visibles, et les actions partagent le même
+style. Les deux groupes de réglages s’empilent lorsque la fenêtre est étroite.
+Entrée conserve l’action suivante (ou lance la recherche dans les fichiers) ;
+Échap ferme d’abord l’historique ouvert, puis le dialogue.
 La recherche propose le respect de la casse, les mots entiers, le sens arrière,
 le bouclage et un périmètre limité au texte sélectionné avant l’ouverture du dialogue.
 Les résultats dans le document actif ou les documents ouverts sont cliquables,

@@ -310,38 +310,6 @@ pub fn dialog_header(ui: &mut egui::Ui, kind: Icon, title: &str) -> bool {
     ui.add_space(8.0);
     close
 }
-pub fn dialog_tab(ui: &mut egui::Ui, label: &str, selected: bool) -> Response {
-    let color = if selected { BLUE } else { MUTED };
-    let text = ui.fonts(|f| f.layout_no_wrap(label.into(), FontId::proportional(16.0), color));
-    let (rect, response) = ui.allocate_exact_size(vec2(text.size().x + 26.0, 40.0), Sense::click());
-    ui.painter().rect_filled(
-        rect,
-        0.0,
-        if selected {
-            Color32::WHITE
-        } else if response.hovered() {
-            BLUE_LIGHT
-        } else {
-            BACKGROUND
-        },
-    );
-    ui.painter().galley(
-        pos2(rect.left() + 13.0, rect.center().y - text.size().y / 2.0),
-        text,
-        color,
-    );
-    if selected {
-        ui.painter().rect_filled(
-            Rect::from_min_max(pos2(rect.left(), rect.bottom() - 3.0), rect.right_bottom()),
-            0.0,
-            BLUE,
-        );
-    }
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
-    response
-}
 pub fn primary_button(ui: &mut egui::Ui, label: &str) -> Response {
     ui.add(
         egui::Button::new(egui::RichText::new(label).color(BLUE))
@@ -351,27 +319,4 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str) -> Response {
             .wrap_mode(egui::TextWrapMode::Extend)
             .min_size(vec2(96.0, 36.0)),
     )
-}
-
-pub fn text_field(ui: &mut egui::Ui, value: &mut String, width: f32) -> Response {
-    let field = egui::Frame::NONE
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, INPUT_BORDER))
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(10, 6))
-        .show(ui, |ui| {
-            ui.add_sized(
-                [(width - 22.0).max(80.0), 22.0],
-                egui::TextEdit::singleline(value).frame(false),
-            )
-        });
-    if field.inner.has_focus() {
-        ui.painter().rect_stroke(
-            field.response.rect,
-            8.0,
-            Stroke::new(1.5, BLUE),
-            egui::StrokeKind::Inside,
-        );
-    }
-    field.inner
 }

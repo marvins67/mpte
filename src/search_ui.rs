@@ -1,7 +1,7 @@
+mod compact;
 use super::{EditorWindow, Id, State};
 use crate::editor::record_undo;
 use crate::search::{self, FileHit, FileOptions, Hit, Mode, Pattern, Query, Report};
-use crate::theme;
 use eframe::egui;
 use std::{
     ops::Range,
@@ -49,6 +49,7 @@ pub struct Panel {
     recursive: bool,
     hidden: bool,
     pub message: String,
+    message_error: bool,
     history: Vec<String>,
     replacements: Vec<String>,
     results: Vec<FileHit>,
@@ -299,6 +300,7 @@ impl Default for Panel {
             recursive: true,
             hidden: false,
             message: String::new(),
+            message_error: false,
             history: vec![],
             replacements: vec![],
             results: vec![],
@@ -366,28 +368,6 @@ impl Panel {
         }
     }
 }
-fn history_field(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut String,
-    history: &[String],
-    width: f32,
-) -> egui::Response {
-    ui.label(label);
-    let response = theme::text_field(ui, value, width);
-    egui::ComboBox::from_id_salt(label)
-        .width(20.0)
-        .selected_text("")
-        .show_ui(ui, |ui| {
-            for item in history {
-                if ui.selectable_label(false, item).clicked() {
-                    value.clone_from(item);
-                }
-            }
-        });
-    ui.end_row();
-    response
-}
 fn remember(history: &mut Vec<String>, value: &str) {
     if value.is_empty() {
         return;
@@ -404,6 +384,7 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                 panel.job = None;
                 match result {
                     JobResult::Scanned(Ok(report)) => {
+                        panel.message_error = false;
                         panel.message = format!(
                             "{} occurrence(s) · {} fichier(s) lu(s) · {} ignoré(s){}",
                             report.count,
@@ -421,8 +402,12 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                             panel.report = Some(report);
                         }
                     }
-                    JobResult::Scanned(Err(error)) => panel.message = error,
+                    JobResult::Scanned(Err(error)) => {
+                        panel.message = error;
+                        panel.message_error = true;
+                    }
                     JobResult::Applied(count, errors) => {
+                        panel.message_error = !errors.is_empty();
                         panel.message =
                             format!("{count} remplacement(s) enregistré(s) sur disque.");
                         panel.errors = errors;
@@ -433,6 +418,7 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
             Err(mpsc::TryRecvError::Disconnected) => {
                 panel.job = None;
                 panel.message = "La tâche s’est arrêtée sans résultat.".into();
+                panel.message_error = true;
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -449,100 +435,20 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
         panel.recursive,
         panel.hidden,
     );
+    // Consume Escape before a popup or field can also close the whole dialog.
+    let had_popup = ctx.memory(|m| m.any_popup_open());
+    let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    if escape && had_popup {
+        ctx.memory_mut(|m| m.close_popup());
+    } else if escape {
+        panel.open = false;
+    }
     let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     let mut open = panel.open;
     let mut command = None;
     let mut clicked = None;
     let busy = panel.job.is_some();
-    egui::Window::new("Rechercher").id(egui::Id::new(("search-dialog", wid)))
-        .open(&mut open).title_bar(false).frame(theme::dialog_frame())
-        .default_width(660.0).max_width((ctx.screen_rect().width()-24.0).max(320.0))
-        .resizable(true).collapsible(false).show(ctx, |ui| {
-            if theme::dialog_header(ui,theme::Icon::Search,"Rechercher") { panel.open = false; }
-            egui::Frame::NONE.fill(theme::BACKGROUND).stroke(egui::Stroke::new(1.0,theme::BORDER)).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.horizontal_wrapped(|ui| {
-                    for (tab,label) in [(Tab::Find,"Rechercher"),(Tab::Replace,"Remplacer"),(Tab::Files,"Rechercher dans les fichiers")] {
-                        if theme::dialog_tab(ui,label,panel.tab == tab).clicked() { panel.tab = tab; }
-                    }
-                });
-            });
-            ui.add_space(8.0);
-            let field_width = (ui.available_width()-180.0).clamp(150.0,360.0);
-            ui.add_enabled_ui(!busy, |ui| {
-                egui::Grid::new(("search-fields", wid)).num_columns(3).show(ui, |ui| {
-                    let response = history_field(ui, "Recherche :", &mut panel.query.needle, &panel.history, field_width);
-                    if panel.focus { response.request_focus(); panel.focus = false; }
-                    if panel.tab != Tab::Find { history_field(ui, "Remplacer par :", &mut panel.query.replacement, &panel.replacements, field_width); }
-                    if panel.tab == Tab::Files {
-                        history_field(ui, "Filtres :", &mut panel.filters, &[], field_width).on_hover_text("Exemples : *.json;*.xml ou src/*.java. * pour tous les fichiers.");
-                        ui.label("Dossier :"); theme::text_field(ui, &mut panel.folder, field_width);
-                        if ui.button("…").clicked() { if let Some(path) = rfd::FileDialog::new().pick_folder() { panel.folder = path.display().to_string(); } } ui.end_row();
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    ui.checkbox(&mut panel.query.word, "Mot entier uniquement"); ui.checkbox(&mut panel.query.case, "Respecter la casse");
-                    if panel.tab == Tab::Files { ui.checkbox(&mut panel.recursive, "Sous-dossiers"); ui.checkbox(&mut panel.hidden, "Dossiers et fichiers cachés"); }
-                    else { ui.checkbox(&mut panel.backward, "Rechercher vers l’arrière"); ui.checkbox(&mut panel.wrap, "Boucler");
-                        ui.add_enabled(panel.scope.is_some(), egui::Checkbox::new(&mut panel.in_selection, "Dans la sélection")); }
-                });
-                ui.group(|ui| {
-                    ui.label("Mode de recherche"); ui.vertical(|ui| {
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                        ui.radio_value(&mut panel.query.mode, Mode::Normal, "Normal");
-                        ui.radio_value(&mut panel.query.mode, Mode::Extended, r"Étendu (\n, \r, \t, \xNN, \uNNNN…)");
-                        ui.radio_value(&mut panel.query.mode, Mode::Regex, "Expression régulière");
-                    });
-                    if panel.query.mode == Mode::Regex {
-                        ui.checkbox(&mut panel.query.dot_newline, "Le point comprend les fins de ligne");
-                        ui.small("Groupes de remplacement : $1, ${nom}. Les références arrière et assertions avant/arrière ne sont pas prises en charge.");
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if panel.tab == Tab::Files {
-                        if theme::primary_button(ui,"Trouver tout").clicked() { command = Some(Command::Files(false)); }
-                        if theme::primary_button(ui,"Remplacer tout…").clicked() { command = Some(Command::Files(true)); }
-                    } else {
-                        if theme::primary_button(ui,"Suivant").clicked() { command = Some(Command::Next); }
-                        if panel.tab == Tab::Find {
-                            if theme::primary_button(ui,"Compter").clicked() { command = Some(Command::Count); }
-                            if theme::primary_button(ui,"Rechercher dans le document actuel").clicked() { command = Some(Command::Current); }
-                            if theme::primary_button(ui,"Rechercher dans tous les documents ouverts").clicked() { command = Some(Command::AllOpen(false)); }
-                        } else {
-                            if theme::primary_button(ui,"Remplacer").clicked() { command = Some(Command::Replace); }
-                            if theme::primary_button(ui,"Remplacer tout").clicked() { command = Some(Command::ReplaceAll); }
-                            if theme::primary_button(ui,"Remplacer dans tous les documents ouverts").clicked() { command = Some(Command::AllOpen(true)); }
-                        }
-                    }
-                });
-            });
-            if busy { ui.horizontal(|ui| { ui.spinner(); ui.label("Traitement en cours…"); if theme::primary_button(ui,"Annuler le traitement").clicked() { command = Some(Command::Cancel); } }); }
-            if let Some((count, files)) = panel.report.as_ref().map(|r| (r.count, r.plan.len())) {
-                ui.group(|ui| {
-                    ui.label(format!("Confirmer {count} remplacement(s) dans {files} fichier(s) sur disque ?"));
-                    ui.label("Les fichiers ouverts dans MPTE seront ignorés. Les autres modifications seront enregistrées immédiatement.");
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled_ui(!busy,|ui| theme::primary_button(ui,"Confirmer les remplacements")).inner.clicked() { command = Some(Command::Confirm); }
-                        if theme::primary_button(ui,"Abandonner").clicked() { panel.report = None; }
-                    });
-                });
-            }
-            if !panel.message.is_empty() {
-                egui::Frame::NONE.fill(theme::BACKGROUND).corner_radius(8).inner_margin(10).show(ui, |ui| {
-                    ui.label(egui::RichText::new(&panel.message).color(theme::MUTED));
-                });
-            }
-            if !panel.errors.is_empty() { ui.collapsing(format!("{} problème(s)", panel.errors.len()), |ui| { for error in &panel.errors { ui.label(error); } }); }
-            if !panel.results.is_empty() {
-                egui::ScrollArea::vertical().id_salt("search-results").max_height(220.0).show(ui, |ui| {
-                    for (index, hit) in panel.results.iter().enumerate() {
-                        if ui.selectable_label(false, format!("{}:{}  {}", hit.path.display(), hit.line, hit.preview)).clicked() { clicked = Some(index); }
-                    }
-                });
-            }
-            if theme::primary_button(ui,"Fermer").clicked() { panel.open = false; }
-        });
+    compact::show(ctx, &mut panel, wid, &mut open, &mut command, &mut clicked);
     if previous
         != (
             panel.tab,
@@ -557,11 +463,9 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
         panel.results.clear();
         panel.highlight = None;
         panel.message.clear();
+        panel.message_error = false;
     }
     panel.open &= open;
-    if panel.open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-        panel.open = false;
-    }
     if panel.open && !busy && enter {
         command = Some(if panel.tab == Tab::Files {
             Command::Files(false)
@@ -576,8 +480,10 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
         }
     }
     if let Some(command) = command {
+        panel.message_error = false;
         if let Err(error) = execute(ctx, state, window, &mut panel, command) {
             panel.message = error;
+            panel.message_error = true;
         }
     }
     window.search = panel;
@@ -1095,5 +1001,88 @@ mod tests {
                 .count(),
             2
         );
+    }
+    fn dialog_frame(
+        ctx: &egui::Context,
+        state: &mut State,
+        window: &mut EditorWindow,
+        events: Vec<egui::Event>,
+    ) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 760.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                draw(ctx, state, window, 0);
+            },
+        );
+    }
+    fn key_event(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+    #[test]
+    fn compact_dialog_keeps_enter_navigation_and_escape_closure() {
+        let (mut state, mut window, panel, id) = fixture("été été");
+        window.search = panel;
+        window.search.show_find(Some(id), &state, &(0..0));
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        dialog_frame(&ctx, &mut state, &mut window, vec![]);
+        dialog_frame(
+            &ctx,
+            &mut state,
+            &mut window,
+            vec![key_event(egui::Key::Enter)],
+        );
+        assert_eq!(window.jump, Some((id, 0..5)));
+        // A popup consumes the first Escape; the second closes only the dialog.
+        ctx.memory_mut(|m| m.open_popup(egui::Id::new("history-test")));
+        dialog_frame(
+            &ctx,
+            &mut state,
+            &mut window,
+            vec![key_event(egui::Key::Escape)],
+        );
+        assert!(window.search.open);
+        assert!(!ctx.memory(|m| m.any_popup_open()));
+        dialog_frame(
+            &ctx,
+            &mut state,
+            &mut window,
+            vec![key_event(egui::Key::Escape)],
+        );
+        assert!(!window.search.open);
+        assert_eq!(state.docs[&id].text, "été été");
+    }
+    #[test]
+    fn compact_dialog_reports_invalid_regex_without_touching_document() {
+        let (mut state, mut window, mut panel, id) = fixture("été");
+        panel.open = true;
+        panel.query.mode = Mode::Regex;
+        panel.query.needle = "[".into();
+        window.search = panel;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        dialog_frame(&ctx, &mut state, &mut window, vec![]);
+        dialog_frame(
+            &ctx,
+            &mut state,
+            &mut window,
+            vec![key_event(egui::Key::Enter)],
+        );
+        assert!(window.search.message_error);
+        assert!(!window.search.message.is_empty());
+        assert_eq!(state.docs[&id].text, "été");
     }
 }
