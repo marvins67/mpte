@@ -102,18 +102,42 @@ impl State {
     }
     fn open(&mut self, window: &mut EditorWindow, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
-        if let Some(i) = window
+        if let Some(id) = window
             .tabs
             .iter()
-            .position(|id| self.docs[id].path.as_ref() == Some(&path))
+            .copied()
+            .find(|id| self.docs[id].path.as_ref() == Some(&path))
         {
-            window.active = i;
+            self.remove_empty_untitled(window);
+            window.active = window.tabs.iter().position(|tab| *tab == id).unwrap();
             return;
         }
         match Document::open(&path) {
-            Ok(doc) => self.add(window, doc),
+            Ok(doc) => {
+                if let Some(index) = self.remove_empty_untitled(window) {
+                    let id = self.id();
+                    self.docs.insert(id, doc);
+                    window.tabs.insert(index, id);
+                    window.active = index;
+                } else {
+                    self.add(window, doc);
+                }
+            }
             Err(e) => self.error = Some(e),
         }
+    }
+    fn remove_empty_untitled(&mut self, window: &mut EditorWindow) -> Option<usize> {
+        let id = *window.tabs.get(window.active)?;
+        let doc = &self.docs[&id];
+        if doc.path.is_some() || !doc.text.is_empty() {
+            return None;
+        }
+        let index = window.active;
+        window.tabs.remove(index);
+        self.docs.remove(&id);
+        window.selection = 0..0;
+        window.jump = None;
+        Some(index)
     }
     fn save(&mut self, id: Id, save_as: bool) -> bool {
         let Some(path) = self.save_path(id, save_as) else {
@@ -761,5 +785,62 @@ mod tests {
         );
         assert!(state.windows[&0].search.open);
         assert_eq!(state.docs[&id].text, before);
+    }
+    #[test]
+    fn opening_file_replaces_active_empty_untitled_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "contenu").unwrap();
+        let mut state = State::new();
+        let mut window = state.windows.remove(&0).unwrap();
+        let placeholder = window.tabs[0];
+        state.add(&mut window, Document::new());
+        let other = window.tabs[1];
+        window.active = 0;
+        state.open(&mut window, path);
+        assert_eq!(window.tabs.len(), 2);
+        assert_eq!(window.active, 0);
+        assert!(!state.docs.contains_key(&placeholder));
+        assert_eq!(window.tabs[1], other);
+        assert_eq!(state.docs[&window.tabs[0]].text, "contenu");
+    }
+    #[test]
+    fn failed_open_and_nonempty_or_saved_documents_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "contenu").unwrap();
+        let mut state = State::new();
+        let mut window = state.windows.remove(&0).unwrap();
+        let placeholder = window.tabs[0];
+        state.open(&mut window, dir.path().join("missing.txt"));
+        assert_eq!(window.tabs, vec![placeholder]);
+        assert!(state.docs.contains_key(&placeholder));
+        state.docs.get_mut(&placeholder).unwrap().text = " ".into();
+        state.open(&mut window, path.clone());
+        assert_eq!(window.tabs.len(), 2);
+        assert_eq!(state.docs[&placeholder].text, " ");
+        let saved = window.tabs[1];
+        state.docs.get_mut(&saved).unwrap().text.clear();
+        let another = dir.path().join("another.txt");
+        std::fs::write(&another, "autre").unwrap();
+        state.open(&mut window, another);
+        assert_eq!(window.tabs.len(), 3);
+        assert!(state.docs.contains_key(&saved));
+    }
+    #[test]
+    fn reopening_existing_file_removes_active_empty_untitled_without_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "contenu").unwrap();
+        let mut state = State::new();
+        let mut window = state.windows.remove(&0).unwrap();
+        state.open(&mut window, path.clone());
+        let file = window.tabs[0];
+        state.add(&mut window, Document::new());
+        let placeholder = window.tabs[1];
+        state.open(&mut window, path);
+        assert_eq!(window.tabs, vec![file]);
+        assert_eq!(window.active, 0);
+        assert!(!state.docs.contains_key(&placeholder));
     }
 }
