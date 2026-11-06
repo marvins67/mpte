@@ -1,0 +1,11 @@
+{
+  "name": "mpte-formatters",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test formatter.test.mjs" },
+  "dependencies": {
+    "prettier": "3.6.2",
+    "prettier-plugin-java": "2.7.5",
+    "@prettier/plugin-xml": "3.4.2"
+  }
+}
