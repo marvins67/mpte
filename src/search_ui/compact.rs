@@ -230,7 +230,7 @@ fn modes(ui: &mut Ui, panel: &mut Panel) {
     ui.horizontal_wrapped(|ui| {
         ui.radio_value(&mut panel.query.mode, Mode::Extended, "Étendu");
         ui.label(
-            egui::RichText::new(r"\n, \r, \t, \xNN, \uNNNN…")
+            egui::RichText::new(r"\n, \r, \t…")
                 .font(FontId::monospace(11.0))
                 .color(SECONDARY),
         );
