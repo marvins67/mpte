@@ -1,5 +1,7 @@
 mod document;
 mod formatter;
+mod search;
+mod search_ui;
 
 use document::Document;
 use eframe::egui::{self, Color32, FontId, Key, Modifiers, RichText, ViewportCommand};
@@ -18,6 +20,9 @@ struct EditorWindow {
     tabs: Vec<Id>,
     active: usize,
     closing: Option<Close>,
+    search: search_ui::Panel,
+    selection: std::ops::Range<usize>,
+    jump: Option<(Id, std::ops::Range<usize>)>,
 }
 #[derive(Clone, Copy)]
 enum Close {
@@ -34,6 +39,7 @@ enum Action {
     Select(usize),
     Close(Close),
     NewWindow,
+    Find,
 }
 struct FormatResult {
     id: Id,
@@ -252,6 +258,38 @@ fn layout(state: &State, text: &str, extension: &str, dark: bool) -> egui::text:
     job
 }
 
+fn search_highlight(job: &mut egui::text::LayoutJob, range: &std::ops::Range<usize>) {
+    if range.is_empty() {
+        return;
+    }
+    let mut sections = Vec::new();
+    for section in &job.sections {
+        let a = section.byte_range.start;
+        let b = section.byte_range.end;
+        let lo = a.max(range.start);
+        let hi = b.min(range.end);
+        if lo >= hi {
+            sections.push(section.clone());
+            continue;
+        }
+        if a < lo {
+            let mut s = section.clone();
+            s.byte_range = a..lo;
+            sections.push(s);
+        }
+        let mut s = section.clone();
+        s.byte_range = lo..hi;
+        s.format.background = Color32::from_rgb(255, 223, 100);
+        sections.push(s);
+        if hi < b {
+            let mut s = section.clone();
+            s.byte_range = hi..b;
+            sections.push(s);
+        }
+    }
+    job.sections = sections;
+}
+
 fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
     if state.quitting {
         return;
@@ -290,6 +328,7 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             (Modifiers::COMMAND, Key::N, Action::New),
             (Modifiers::COMMAND, Key::O, Action::Open),
             (Modifiers::COMMAND, Key::S, Action::Save(false)),
+            (Modifiers::COMMAND, Key::F, Action::Find),
         ] {
             if i.consume_key(modifiers, key) {
                 actions.push(action);
@@ -314,6 +353,7 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                 ("Enregistrer", Action::Save(false)),
                 ("Enregistrer sous…", Action::Save(true)),
                 ("Formater", Action::Format),
+                ("Rechercher…", Action::Find),
                 ("Nouvelle fenêtre", Action::NewWindow),
                 ("Détacher l’onglet", Action::Detach),
             ] {
@@ -385,11 +425,18 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         let cache_id = egui::Id::new(("syntax", id));
         let cached =
             ctx.data_mut(|d| d.get_temp::<(u64, bool, String, egui::text::LayoutJob)>(cache_id));
-        let job = match cached {
+        let mut job = match cached {
             Some((r, d, e, job)) if r == revision && d == dark && e == extension => job,
             _ => layout(state, &doc.text, &extension, dark),
         };
         ctx.data_mut(|d| d.insert_temp(cache_id, (revision, dark, extension.clone(), job.clone())));
+        {
+            if let Some((did, rev, range)) = &window.search.highlight {
+                if *did == id && *rev == revision {
+                    search_highlight(&mut job, range);
+                }
+            }
+        }
         let doc = state.docs.get_mut(&id).unwrap();
         doc.format_on_save = format_on_save;
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -436,16 +483,60 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                             };
                             ui.fonts(|f| f.layout_job(job))
                         };
-                        let response = ui.add(
-                            egui::TextEdit::multiline(&mut doc.text)
-                                .id_salt(("text", id))
-                                .font(FontId::monospace(14.0))
-                                .code_editor()
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(lines.max(30))
-                                .layouter(&mut layouter),
-                        );
-                        if response.changed() {
+                        let editor_id = egui::Id::new(("text", id));
+                        let jump = window.jump.take().filter(|(did, range)| {
+                            *did == id
+                                && range.end <= doc.text.len()
+                                && doc.text.is_char_boundary(range.start)
+                                && doc.text.is_char_boundary(range.end)
+                        });
+                        if let Some((_, range)) = &jump {
+                            if range.end <= doc.text.len()
+                                && doc.text.is_char_boundary(range.start)
+                                && doc.text.is_char_boundary(range.end)
+                            {
+                                let start = doc.text[..range.start].chars().count();
+                                let end = doc.text[..range.end].chars().count();
+                                let mut edit =
+                                    egui::TextEdit::load_state(ctx, editor_id).unwrap_or_default();
+                                edit.cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(start),
+                                        egui::text::CCursor::new(end),
+                                    )));
+                                edit.store(ctx, editor_id);
+                            }
+                        }
+                        let output = egui::TextEdit::multiline(&mut doc.text)
+                            .id(editor_id)
+                            .font(FontId::monospace(14.0))
+                            .code_editor()
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(lines.max(30))
+                            .layouter(&mut layouter)
+                            .show(ui);
+                        if let Some(range) = output.state.cursor.char_range() {
+                            let char_to_byte = |n| {
+                                doc.text
+                                    .char_indices()
+                                    .nth(n)
+                                    .map_or(doc.text.len(), |(i, _)| i)
+                            };
+                            let a = char_to_byte(range.primary.index);
+                            let b = char_to_byte(range.secondary.index);
+                            window.selection = a.min(b)..a.max(b);
+                        }
+                        if let Some((_, range)) = jump {
+                            let c = egui::text::CCursor::new(
+                                doc.text.get(..range.start).unwrap_or("").chars().count(),
+                            );
+                            let rect = output
+                                .galley
+                                .pos_from_ccursor(c)
+                                .translate(output.galley_pos.to_vec2());
+                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                        }
+                        if output.response.changed() {
                             doc.revision += 1;
                         }
                     });
@@ -497,6 +588,9 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                     state.format(id, false, ctx);
                 }
             }
+            Action::Find => {
+                window.search.show_find(active, state, &window.selection);
+            }
             Action::Select(index) => window.active = index,
             Action::Detach => {
                 if let Some(id) = active {
@@ -521,6 +615,7 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             Action::Close(close) => window.closing = Some(close),
         }
     }
+    search_ui::draw(ctx, state, &mut window, window_id);
     let mut remove_window = false;
     if let Some(close) = window.closing {
         let ids: Vec<Id> = match close {
@@ -723,5 +818,27 @@ mod tests {
         let _ = ctx.run(input, |ctx| draw(ctx, &mut state, 0));
         assert_eq!(state.windows.len(), 2);
         assert_eq!(state.windows[&0].tabs.len(), before);
+    }
+    #[test]
+    fn command_f_opens_search_without_modifying_document() {
+        let mut state = State::new();
+        let id = state.windows[&0].tabs[0];
+        let before = state.docs[&id].text.clone();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: Key::F,
+                    physical_key: Some(Key::F),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::COMMAND,
+                }],
+                ..Default::default()
+            },
+            |ctx| draw(ctx, &mut state, 0),
+        );
+        assert!(state.windows[&0].search.open);
+        assert_eq!(state.docs[&id].text, before);
     }
 }

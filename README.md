@@ -8,6 +8,7 @@ Rust + egui/eframe, rendu OpenGL, sans navigateur embarqué. Interface en franç
 - Plusieurs fichiers dans des onglets ; un onglet peut être détaché dans une fenêtre indépendante.
 - Ouverture multiple, glisser-déposer, fichiers passés en arguments, nouveau document, enregistrer et enregistrer sous.
 - Numéros de ligne, coloration JSON, XML, HTML et Java suivant l’extension.
+- Boîte de recherche à trois onglets, accessible par Cmd+F et le bouton Rechercher.
 - Formatage à la demande ou à l’enregistrement (case propre à chaque document, désactivée initialement).
 - Confirmation avant fermeture des documents modifiés, annuler/rétablir via le composant de texte.
 - Fichiers UTF-8 uniquement, conservation du BOM et des fins de ligne CRLF ; sauvegarde atomique, détection des modifications externes.
@@ -47,6 +48,7 @@ cd /workspace/mpte
 Raccourcis (Ctrl remplace Cmd sous Linux) : Cmd+N nouveau, Cmd+O ouvrir,
 Cmd+S enregistrer, Cmd+Maj+S enregistrer sous, Cmd+W fermer l’onglet,
 Cmd+Maj+N nouvelle fenêtre, Cmd+Maj+F formater, Cmd+Q quitter.
+Cmd+F ouvre la recherche (Ctrl+F sous Linux).
 Couper/copier/coller, sélection et annulation utilisent les raccourcis habituels du composant.
 
 ```sh
@@ -55,6 +57,43 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+Pour tester la vitesse de lancement sans passer par la compilation de développement :
+
+```sh
+cargo build --release --locked
+./target/release/mpte
+```
+
+## Rechercher et remplacer
+
+Cmd+F ouvre trois onglets : **Rechercher**, **Remplacer**, **Rechercher dans les fichiers**.
+La recherche propose le respect de la casse, les mots entiers, le sens arrière,
+le bouclage et un périmètre limité au texte sélectionné avant l’ouverture du dialogue.
+Les résultats dans le document actif ou les documents ouverts sont cliquables,
+y compris pour les documents non enregistrés et les fenêtres détachées.
+
+Trois modes sont disponibles : normal (texte littéral), étendu (`\n`, `\r`, `\t`,
+`\\`, `\xNN`, `\uNNNN`) et expression régulière. Les regex utilisent la syntaxe du
+crate Rust `regex` : groupes `$1` et `${nom}` pour le remplacement, sans assertions
+avant/arrière ni références arrière dans le motif. `^` et `$` délimitent les lignes ;
+une case permet au point de correspondre aussi aux fins de ligne. Les fins de ligne
+des documents sont normalisées en `\n` pendant l’édition.
+
+La recherche dans les fichiers accepte un dossier et des filtres séparés par `;`
+(ex. `*.json;*.xml`). Elle s’exécute en arrière-plan, avec sous-dossiers et éléments
+cachés en option. Les liens symboliques ne sont pas suivis ; les fichiers binaires,
+non UTF-8 ou dépassant 16 Mio sont ignorés. L’affichage est limité à 5 000 résultats.
+Un clic ouvre le résultat et sélectionne l’occurrence ; un contenu devenu différent
+demande de relancer la recherche.
+
+Les remplacements dans les documents ouverts restent **non enregistrés**. Le
+remplacement dans un dossier prépare d’abord un aperçu, puis exige une confirmation
+avant d’écrire sur disque. Les fichiers ouverts dans MPTE sont ignorés par cette
+opération : utiliser le remplacement dans tous les documents ouverts pour ceux-ci.
+Les changements externes sont détectés avant chaque écriture. Le plan est limité
+à 100 Mio de texte ; une annulation ou une erreur ne revient pas sur les fichiers
+déjà enregistrés. Le détail des erreurs est affiché dans le dialogue.
 
 ## Application macOS
 
@@ -75,7 +114,7 @@ validée sur macOS : ce cloud est Linux.
 ## Limites de cette base
 
 - Pas encore d’intégration aux menus natifs macOS ni d’association Finder « Ouvrir avec ».
-- Pas de recherche/remplacement ni de restauration de session à ce stade.
+- Pas de restauration de session à ce stade.
 - Pas encore de mesures de démarrage, mémoire ou performances sur de gros fichiers.
   La coloration est désactivée au-delà de 2 Mio ; le composant charge le document entier.
 - Le runtime Node embarqué augmente la taille du bundle. Pour une distribution plus légère,
