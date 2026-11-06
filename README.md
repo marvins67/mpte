@@ -22,7 +22,11 @@ Une erreur de syntaxe est affichée et empêche la sauvegarde avec formatage.
 ## Développement
 
 Prérequis : Rust via rustup (version fixée dans `rust-toolchain.toml`), Node.js 22+
-et npm. Sur macOS : outils de ligne de commande Xcode (`xcode-select --install`).
+(24 LTS recommandé, version indiquée dans `.nvmrc`) et npm fourni avec Node.
+Sur macOS : outils de ligne de commande Xcode (`xcode-select --install`).
+Il n’est pas nécessaire de mettre npm à jour séparément. Si npm refuse une mise à
+jour avec `EBADENGINE`, conserver le npm fourni avec Node ou passer à Node 24 LTS.
+Avec nvm déjà installé : `nvm install` puis `nvm use` depuis la racine du dépôt.
 
 ```sh
 cd /chemin/vers/mpte
