@@ -162,7 +162,9 @@ bash scripts/package-macos.sh
 open dist/MPTE.app
 ```
 
-Le script embarque le binaire Rust, Node et les formateurs pour que le lancement
+Le script embarque l’icône « La ligne active » pour le Finder et le Dock. Sa
+source est `assets/MPTE.svg` et le bundle utilise `assets/MPTE.icns`.
+Le script embarque aussi le binaire Rust, Node et les formateurs pour que le lancement
 depuis le Finder ne dépende pas du PATH du terminal. Il construit pour l’architecture
 du Mac actuel (Apple Silicon ou Intel), sans notarisation ; la signature ad hoc
 convient aux essais locaux. Pour distribuer l’application, une signature Developer ID

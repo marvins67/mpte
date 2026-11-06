@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"
+     viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">MPTE — La ligne active</title>
+  <desc id="description">Icône d’un éditeur de texte. Deux lignes bleu ardoise encadrent une ligne claire sélectionnée en bleu vif sur un carré arrondi gris bleuté.</desc>
+  <metadata>
+    Source vectorielle de l’icône d’application MPTE. Variante « La ligne active » validée.
+    La palette claire du concept sert de référence pour cette version de l’icône.
+    Le fond extérieur est transparent. Le carré arrondi mesure 896 unités sur un
+    canevas de 1024, avec 64 unités de marge de chaque côté.
+    Les quatre formes du symbole sont à conserver lors des exports.
+    Pour l’intégration, réutiliser le pipeline d’icônes de MPTE et vérifier le rendu
+    à 16, 24 et 32 pixels ainsi qu’à la taille du Dock.
+  </metadata>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2=".8" y2="1">
+      <stop offset="0" stop-color="#F5F8FD"/>
+      <stop offset="1" stop-color="#CEDBEF"/>
+    </linearGradient>
+    <linearGradient id="active" x1="0" y1="0" x2=".8" y2="1">
+      <stop offset="0" stop-color="#347BF3"/>
+      <stop offset="1" stop-color="#2058B6"/>
+    </linearGradient>
+  </defs>
+
+  <rect id="fond" x="64" y="64" width="896" height="896" rx="202" fill="url(#tile)"/>
+  <rect x="69" y="69" width="886" height="886" rx="197"
+        fill="none" stroke="#1C3451" stroke-opacity=".13" stroke-width="10"/>
+
+  <g id="lignes-inactives" fill="#596F92">
+    <rect x="234" y="294" width="466" height="54" rx="22"/>
+    <rect x="234" y="663" width="466" height="54" rx="22"/>
+  </g>
+  <rect id="selection" x="198" y="436" width="628" height="185" rx="47" fill="url(#active)"/>
+  <rect id="ligne-active" x="252" y="503" width="403" height="42" rx="18" fill="#EEF6FF"/>
+</svg>

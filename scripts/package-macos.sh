@@ -15,6 +15,7 @@ if [[ -e "$bundle" ]]; then
 fi
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/formatters/node/bin"
 cp target/release/mpte "$bundle/Contents/MacOS/MPTE"
+cp assets/MPTE.icns "$bundle/Contents/Resources/"
 cp tools/format.mjs "$bundle/Contents/Resources/formatters/"
 cp -R tools/node_modules "$bundle/Contents/Resources/formatters/"
 node_binary="$(node -p 'process.execPath')"
@@ -32,6 +33,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>MPTE</string>
 <key>CFBundleIdentifier</key><string>dev.mpte.editor</string>
 <key>CFBundleName</key><string>MPTE</string>
+<key>CFBundleIconFile</key><string>MPTE.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleVersion</key><string>1</string>
