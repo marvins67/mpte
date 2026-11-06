@@ -57,6 +57,231 @@ pub struct Panel {
     errors: Vec<String>,
     pub highlight: Option<(Id, u64, Range<usize>)>,
 }
+
+#[derive(Default)]
+pub struct Quick {
+    pub open: bool,
+    focus: bool,
+    query: String,
+    cache: Option<(Id, u64, String, Vec<Range<usize>>)>,
+}
+impl Quick {
+    pub fn show(&mut self, selected: Option<&str>) {
+        self.open = true;
+        self.focus = true;
+        if let Some(text) = selected.filter(|s| !s.is_empty() && !s.contains('\n')) {
+            self.query = text.into();
+        }
+    }
+    pub fn highlight(&self, id: Id, revision: u64, job: &mut egui::text::LayoutJob) {
+        if !self.open {
+            return;
+        }
+        let Some((did, rev, _, ranges)) = &self.cache else {
+            return;
+        };
+        if *did != id || *rev != revision {
+            return;
+        }
+        let mut sections = Vec::new();
+        let mut index = 0;
+        for section in &job.sections {
+            let mut start = section.byte_range.start;
+            let end = section.byte_range.end;
+            while index < ranges.len() && ranges[index].end <= start {
+                index += 1;
+            }
+            let mut hit = index;
+            while hit < ranges.len() && ranges[hit].start < end {
+                let lo = start.max(ranges[hit].start);
+                let hi = end.min(ranges[hit].end);
+                if start < lo {
+                    let mut s = section.clone();
+                    s.byte_range = start..lo;
+                    sections.push(s);
+                }
+                if lo < hi {
+                    let mut s = section.clone();
+                    s.byte_range = lo..hi;
+                    s.format.background = egui::Color32::from_rgb(255, 234, 165);
+                    sections.push(s);
+                    start = hi;
+                }
+                hit += 1;
+            }
+            if start < end {
+                let mut s = section.clone();
+                s.byte_range = start..end;
+                sections.push(s);
+            }
+        }
+        job.sections = sections;
+    }
+}
+pub fn quick_bar(
+    ctx: &egui::Context,
+    state: &State,
+    window: &mut EditorWindow,
+    wid: Id,
+    actions: &mut Vec<super::Action>,
+) {
+    use crate::theme::{self, Icon};
+    let mut quick = std::mem::take(&mut window.quick);
+    if !quick.open {
+        window.quick = quick;
+        return;
+    }
+    let id = window.tabs.get(window.active).copied();
+    let input_id = egui::Id::new(("quick-search", wid));
+    let focused = ctx.memory(|m| m.has_focus(input_id));
+    let mut direction = None;
+    let mut changed = false;
+    let mut close = (focused || ctx.memory(|m| m.had_focus_last_frame(input_id)))
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    if focused {
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter) {
+                direction = Some(-1);
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                direction = Some(1);
+            }
+        });
+    }
+    let count = quick.cache.as_ref().map_or(0, |c| c.3.len());
+    let current = quick
+        .cache
+        .as_ref()
+        .and_then(|(_, _, _, ranges)| {
+            window.search.highlight.as_ref().and_then(|(did, _, r)| {
+                if Some(*did) == id {
+                    ranges.iter().position(|h| h == r).map(|i| i + 1)
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or(0);
+    egui::TopBottomPanel::top("quick-search")
+        .show_separator_line(false)
+        .exact_height(56.0)
+        .frame(theme::panel_frame(theme::BACKGROUND))
+        .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                let width = (ui.available_width() - 255.0).clamp(150.0, 480.0);
+                egui::Frame::NONE
+                    .fill(egui::Color32::WHITE)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::symmetric(10, 5))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+                            theme::icon(ui, rect, Icon::Search, theme::MUTED);
+                            let response = ui.add_sized(
+                                [width - 45.0, 24.0],
+                                egui::TextEdit::singleline(&mut quick.query)
+                                    .id(input_id)
+                                    .frame(false)
+                                    .hint_text("Rechercher dans ce fichier"),
+                            );
+                            if quick.focus {
+                                response.request_focus();
+                                quick.focus = false;
+                            }
+                            changed = response.changed();
+                        });
+                    });
+                ui.label(egui::RichText::new(format!("{current} / {count}")).color(theme::MUTED));
+                if theme::button(ui, Icon::Up, "", false)
+                    .on_hover_text("Occurrence précédente · Maj+Entrée")
+                    .clicked()
+                {
+                    direction = Some(-1);
+                }
+                if theme::button(ui, Icon::Down, "", false)
+                    .on_hover_text("Occurrence suivante · Entrée")
+                    .clicked()
+                {
+                    direction = Some(1);
+                }
+                if theme::button(ui, Icon::Settings, "", false)
+                    .on_hover_text("Recherche avancée · Cmd/Ctrl+F")
+                    .clicked()
+                {
+                    window.search.query.needle.clone_from(&quick.query);
+                    actions.push(super::Action::Find);
+                }
+                if theme::button(ui, Icon::Close, "", false)
+                    .on_hover_text("Fermer la recherche · Échap")
+                    .clicked()
+                {
+                    close = true;
+                }
+            });
+        });
+    if let Some(id) = id {
+        let doc = &state.docs[&id];
+        let refresh = quick
+            .cache
+            .as_ref()
+            .is_none_or(|(did, rev, q, _)| *did != id || *rev != doc.revision || *q != quick.query);
+        if refresh {
+            let hits = if quick.query.is_empty() {
+                vec![]
+            } else {
+                Pattern::new(&Query {
+                    needle: quick.query.clone(),
+                    ..Default::default()
+                })
+                .map(|p| {
+                    p.hits(&doc.text, 0..doc.text.len())
+                        .into_iter()
+                        .map(|h| h.range)
+                        .collect()
+                })
+                .unwrap_or_default()
+            };
+            quick.cache = Some((id, doc.revision, quick.query.clone(), hits));
+            ctx.request_repaint();
+        }
+        if changed || direction.is_some() {
+            let ranges = &quick.cache.as_ref().unwrap().3;
+            let caret = if changed || direction == Some(-1) {
+                window.selection.start
+            } else {
+                window.selection.end
+            };
+            let hit = if direction == Some(-1) {
+                ranges
+                    .iter()
+                    .rev()
+                    .find(|r| r.end <= caret)
+                    .or_else(|| ranges.last())
+            } else {
+                ranges
+                    .iter()
+                    .find(|r| r.start >= caret)
+                    .or_else(|| ranges.first())
+            };
+            window.search.highlight = hit.map(|r| (id, doc.revision, r.clone()));
+            if let Some(range) = hit {
+                window.selection = range.clone();
+                window.jump = Some((id, range.clone()));
+            }
+            ctx.request_repaint();
+        }
+    }
+    if close {
+        quick.open = false;
+        window.search.highlight = None;
+        if let Some(id) = id {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new(("text", id))));
+        }
+        ctx.request_repaint();
+    }
+    window.quick = quick;
+}
 impl Default for Panel {
     fn default() -> Self {
         Self {
@@ -776,5 +1001,83 @@ mod tests {
         );
         let mut undoer = edit.undoer();
         assert_eq!(undoer.undo(&current).unwrap().1, "été été");
+    }
+    #[test]
+    fn quick_search_counts_navigates_and_closes_without_changing_text() {
+        let (mut state, mut window, _, id) = fixture("été été");
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        window.quick.show(None);
+        let frame = |window: &mut EditorWindow, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100.0, 760.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    quick_bar(ctx, &state, window, 0, &mut vec![]);
+                },
+            );
+        };
+        frame(&mut window, vec![]);
+        frame(&mut window, vec![egui::Event::Text("été".into())]);
+        assert_eq!(window.quick.cache.as_ref().unwrap().3.len(), 2);
+        assert_eq!(window.jump, Some((id, 0..5)));
+        let key = |modifiers, key| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        frame(
+            &mut window,
+            vec![key(egui::Modifiers::NONE, egui::Key::Enter)],
+        );
+        assert_eq!(window.jump, Some((id, 6..11)));
+        frame(
+            &mut window,
+            vec![key(egui::Modifiers::SHIFT, egui::Key::Enter)],
+        );
+        assert_eq!(window.jump, Some((id, 0..5)));
+        frame(
+            &mut window,
+            vec![key(egui::Modifiers::NONE, egui::Key::Escape)],
+        );
+        assert!(!window.quick.open);
+        assert!(window.search.highlight.is_none());
+        assert_eq!(state.docs.get_mut(&id).unwrap().text, "été été");
+    }
+    #[test]
+    fn quick_highlights_preserve_every_utf8_byte() {
+        let mut quick = Quick::default();
+        quick.show(None);
+        quick.cache = Some((1, 0, "été".into(), vec![0..5, 6..11]));
+        let text = "été été";
+        let mut job = egui::text::LayoutJob::simple(
+            text.into(),
+            egui::FontId::monospace(15.0),
+            egui::Color32::BLACK,
+            f32::INFINITY,
+        );
+        quick.highlight(1, 0, &mut job);
+        assert_eq!(job.text, text);
+        let covered: String = job
+            .sections
+            .iter()
+            .map(|s| &text[s.byte_range.clone()])
+            .collect();
+        assert_eq!(covered, text);
+        assert_eq!(
+            job.sections
+                .iter()
+                .filter(|s| s.format.background != egui::Color32::TRANSPARENT)
+                .count(),
+            2
+        );
     }
 }

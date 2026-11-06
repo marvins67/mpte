@@ -131,7 +131,7 @@ pub fn show(
             let background = ui.painter().add(Shape::Noop);
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.horizontal_top(|ui| {
-                let font = FontId::monospace(14.0);
+                let font = FontId::monospace(crate::theme::EDITOR_FONT_SIZE);
                 let line_height = ui.fonts(|f| f.row_height(&font));
                 let space = ui.fonts(|f| f.glyph_width(&font, ' '));
                 let mut visible = doc.view.outline.visibility(&doc.view.collapsed);
@@ -143,7 +143,7 @@ pub fn show(
                 let (gutter, _) =
                     ui.allocate_exact_size(vec2(gutter_width, height), egui::Sense::hover());
                 ui.painter()
-                    .rect_filled(gutter, 0.0, Color32::from_rgb(244, 244, 246));
+                    .rect_filled(gutter, 0.0, crate::theme::BACKGROUND);
                 let mut display_row = 0;
                 let mut toggled = false;
                 for (line, is_visible) in visible.iter().enumerate() {
@@ -160,7 +160,11 @@ pub fn show(
                         egui::Align2::RIGHT_TOP,
                         (line + 1).to_string(),
                         font.clone(),
-                        ui.visuals().weak_text_color(),
+                        if line == doc.view.outline.line_at(caret) {
+                            crate::theme::BLUE
+                        } else {
+                            crate::theme::MUTED
+                        },
                     );
                     let x = gutter.right() - 12.0;
                     if doc
@@ -378,7 +382,7 @@ pub fn show(
                         );
                         ui.painter().set(
                             background,
-                            Shape::rect_filled(r, 0.0, Color32::from_rgb(236, 235, 255)),
+                            Shape::rect_filled(r, 0.0, crate::theme::CURRENT_LINE),
                         );
                     }
                     let line = doc.view.outline.line_at(a);
@@ -453,8 +457,13 @@ mod tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| {
             let text = "{\n  \"été\": 1,\n  \"two\": 2\n}";
-            let galley = ctx
-                .fonts(|f| f.layout_no_wrap(text.into(), FontId::monospace(14.0), Color32::BLACK));
+            let galley = ctx.fonts(|f| {
+                f.layout_no_wrap(
+                    text.into(),
+                    FontId::monospace(crate::theme::EDITOR_FONT_SIZE),
+                    Color32::BLACK,
+                )
+            });
             let original = galley.clone();
             let folded = folded_galley(galley, &[true, false, false, true]);
             assert_eq!(folded.job.text, text);
@@ -484,7 +493,7 @@ mod tests {
                     .show(ctx, |ui| {
                         let job = egui::text::LayoutJob::simple(
                             doc.text.clone(),
-                            FontId::monospace(14.0),
+                            FontId::monospace(crate::theme::EDITOR_FONT_SIZE),
                             Color32::BLACK,
                             f32::INFINITY,
                         );
@@ -493,23 +502,35 @@ mod tests {
             },
         )
     }
+    fn column_position(ctx: &egui::Context, column: usize, row: usize) -> egui::Pos2 {
+        let font = FontId::monospace(crate::theme::EDITOR_FONT_SIZE);
+        let (space, height) = ctx.fonts(|f| (f.glyph_width(&font, ' '), f.row_height(&font)));
+        pos2(
+            60.0 + column as f32 * space,
+            2.0 + (row as f32 + 0.5) * height,
+        )
+    }
     fn select_column(ctx: &egui::Context, doc: &mut Document) {
         column_frame(
             ctx,
             doc,
             vec![egui::Event::PointerButton {
-                pos: pos2(76.0, 8.0),
+                pos: column_position(ctx, 2, 0),
                 button: egui::PointerButton::Primary,
                 pressed: true,
                 modifiers: egui::Modifiers::ALT,
             }],
         );
-        column_frame(ctx, doc, vec![egui::Event::PointerMoved(pos2(100.0, 40.0))]);
+        column_frame(
+            ctx,
+            doc,
+            vec![egui::Event::PointerMoved(column_position(ctx, 5, 2))],
+        );
         column_frame(
             ctx,
             doc,
             vec![egui::Event::PointerButton {
-                pos: pos2(100.0, 40.0),
+                pos: column_position(ctx, 5, 2),
                 button: egui::PointerButton::Primary,
                 pressed: false,
                 modifiers: egui::Modifiers::ALT,

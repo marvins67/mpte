@@ -12,7 +12,8 @@ Rust + egui/eframe, rendu OpenGL, sans navigateur embarqué. Interface en franç
 - Repliement des blocs avec boutons +/− dans la marge et guides de niveaux.
 - Sélection rectangulaire avec Alt/Option + glisser, copie et édition en colonnes.
 - Zone d’édition étendue à toute la largeur et toute la hauteur disponibles.
-- Boîte de recherche à trois onglets, accessible par Cmd+F et le bouton Rechercher.
+- Interface claire avec icônes, onglets soulignés en bleu et menu « … » pour les actions secondaires.
+- Recherche rapide intégrée et boîte de recherche avancée à trois onglets, accessible par Cmd+F.
 - Formatage à la demande ou à l’enregistrement (case propre à chaque document, désactivée initialement).
 - Confirmation avant fermeture des documents modifiés, annuler/rétablir via le composant de texte.
 - Fichiers UTF-8 uniquement, conservation du BOM et des fins de ligne CRLF ; sauvegarde atomique, détection des modifications externes.
@@ -71,6 +72,12 @@ cargo build --release --locked
 
 ## Rechercher et remplacer
 
+Le bouton **Rechercher** de la barre d’outils ouvre une barre intégrée sous les
+onglets. La saisie surligne les occurrences dans le fichier actif et affiche un
+compteur. Les flèches ou Entrée / Maj+Entrée passent à l’occurrence suivante ou
+précédente. Échap ou la croix ferme la barre. L’icône de réglages ouvre les options
+avancées ; la recherche rapide utilise du texte littéral, sans distinction de casse.
+
 Cmd+F ouvre trois onglets : **Rechercher**, **Remplacer**, **Rechercher dans les fichiers**.
 La recherche propose le respect de la casse, les mots entiers, le sens arrière,
 le bouclage et un périmètre limité au texte sélectionné avant l’ouverture du dialogue.
@@ -98,6 +105,13 @@ opération : utiliser le remplacement dans tous les documents ouverts pour ceux-
 Les changements externes sont détectés avant chaque écriture. Le plan est limité
 à 100 Mio de texte ; une annulation ou une erreur ne revient pas sur les fichiers
 déjà enregistrés. Le détail des erreurs est affiché dans le dialogue.
+
+Le menu **…** regroupe Enregistrer sous, Nouvelle fenêtre, Détacher l’onglet,
+Recherche avancée, Fermer l’onglet et Quitter. Un clic droit sur un onglet permet
+aussi de le détacher ; le bouton de fermeture et le clic du milieu ferment l’onglet.
+La barre d’état réunit ligne/colonne, nombre de lignes, formatage à l’enregistrement,
+encodage et type de fichier. La barre d’outils passe aux icônes seules si la fenêtre
+est étroite. Les commandes de fenêtre restent celles du système d’exploitation.
 
 ## Navigation dans les blocs
 

@@ -1,3 +1,4 @@
+mod chrome;
 mod column;
 mod document;
 mod editor;
@@ -5,6 +6,7 @@ mod formatter;
 mod outline;
 mod search;
 mod search_ui;
+mod theme;
 
 use document::Document;
 use eframe::egui::{self, Color32, FontId, Key, Modifiers, RichText, ViewportCommand};
@@ -24,6 +26,7 @@ struct EditorWindow {
     active: usize,
     closing: Option<Close>,
     search: search_ui::Panel,
+    quick: search_ui::Quick,
     selection: std::ops::Range<usize>,
     jump: Option<(Id, std::ops::Range<usize>)>,
 }
@@ -43,6 +46,7 @@ enum Action {
     Close(Close),
     NewWindow,
     Find,
+    QuickFind,
 }
 struct FormatResult {
     id: Id,
@@ -67,13 +71,15 @@ struct State {
 impl State {
     fn new() -> Self {
         let (tx, rx) = mpsc::channel();
+        let mut themes = ThemeSet::load_defaults();
+        themes.themes.insert("MPTE Light".into(), theme::syntax());
         let mut state = Self {
             docs: BTreeMap::new(),
             windows: BTreeMap::new(),
             next: 1,
             error: None,
             syntax: SyntaxSet::load_defaults_newlines(),
-            themes: ThemeSet::load_defaults(),
+            themes,
             quitting: false,
             tx,
             rx,
@@ -235,13 +241,13 @@ fn layout(state: &State, text: &str, extension: &str, dark: bool) -> egui::text:
     if text.len() > 2 * 1024 * 1024 {
         return egui::text::LayoutJob::simple(
             text.to_owned(),
-            FontId::monospace(14.0),
+            FontId::monospace(theme::EDITOR_FONT_SIZE),
             if dark { Color32::WHITE } else { Color32::BLACK },
             f32::INFINITY,
         );
     }
     let mut job = egui::text::LayoutJob::default();
-    let font = FontId::monospace(14.0);
+    let font = FontId::monospace(theme::EDITOR_FONT_SIZE);
     let syntax = state
         .syntax
         .find_syntax_by_extension(extension)
@@ -249,7 +255,7 @@ fn layout(state: &State, text: &str, extension: &str, dark: bool) -> egui::text:
     let theme = &state.themes.themes[if dark {
         "base16-ocean.dark"
     } else {
-        "InspiredGitHub"
+        "MPTE Light"
     }];
     let mut highlighter = HighlightLines::new(syntax, theme);
     for line in LinesWithEndings::from(text) {
@@ -370,57 +376,9 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             actions.push(Action::Close(Close::Quit));
         }
     });
-    egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("MPTE");
-            ui.separator();
-            for (label, action) in [
-                ("Nouveau", Action::New),
-                ("Ouvrir…", Action::Open),
-                ("Enregistrer", Action::Save(false)),
-                ("Enregistrer sous…", Action::Save(true)),
-                ("Formater", Action::Format),
-                ("Rechercher…", Action::Find),
-                ("Nouvelle fenêtre", Action::NewWindow),
-                ("Détacher l’onglet", Action::Detach),
-            ] {
-                if ui.button(label).clicked() {
-                    actions.push(action);
-                }
-            }
-        });
-        egui::ScrollArea::horizontal()
-            .id_salt("tabs")
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (index, id) in window.tabs.iter().enumerate() {
-                        let doc = &state.docs[id];
-                        let title =
-                            format!("{}{}", doc.title(), if doc.dirty() { " •" } else { "" });
-                        if ui
-                            .selectable_label(index == window.active, title)
-                            .on_hover_text(
-                                doc.path
-                                    .as_ref()
-                                    .map(|p| p.display().to_string())
-                                    .unwrap_or_default(),
-                            )
-                            .clicked()
-                        {
-                            actions.push(Action::Select(index));
-                        }
-                        if ui
-                            .small_button("×")
-                            .on_hover_text("Fermer l’onglet")
-                            .clicked()
-                        {
-                            actions.push(Action::Close(Close::Tab(*id)));
-                        }
-                        ui.separator();
-                    }
-                });
-            });
-    });
+    chrome::toolbar(ctx, state, &window, &mut actions);
+    search_ui::quick_bar(ctx, state, &mut window, window_id, &mut actions);
+    chrome::status(ctx, state, &window);
     if let Some(id) = active {
         let doc = &state.docs[&id];
         ctx.send_viewport_cmd(ViewportCommand::Title(format!(
@@ -428,31 +386,6 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             doc.title(),
             if doc.dirty() { " •" } else { "" }
         )));
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "{} lignes · UTF-8 · {}",
-                    doc.text.split('\n').count(),
-                    doc.extension().to_uppercase()
-                ));
-                if state.busy.contains(&id) {
-                    ui.spinner();
-                    ui.label("Formatage…");
-                }
-                if let Some(rectangle) = &doc.column.rectangle {
-                    ui.separator();
-                    ui.label(format!(
-                        "Mode colonne · {} ligne(s) × {} colonne(s)",
-                        rectangle.rows.len(),
-                        rectangle.columns.len()
-                    ));
-                }
-            });
-        });
-        let mut format_on_save = doc.format_on_save;
-        egui::TopBottomPanel::bottom("options").show(ctx, |ui| {
-            ui.checkbox(&mut format_on_save, "Formater à l’enregistrement");
-        });
         // Cache by content revision: cursor movement does not re-run syntax highlighting.
         let extension = doc.extension();
         let revision = doc.revision;
@@ -465,6 +398,7 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             _ => layout(state, &doc.text, &extension, dark),
         };
         ctx.data_mut(|d| d.insert_temp(cache_id, (revision, dark, extension.clone(), job.clone())));
+        window.quick.highlight(id, revision, &mut job);
         {
             if let Some((did, rev, range)) = &window.search.highlight {
                 if *did == id && *rev == revision {
@@ -473,7 +407,6 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             }
         }
         let doc = state.docs.get_mut(&id).unwrap();
-        doc.format_on_save = format_on_save;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(Color32::WHITE))
             .show(ctx, |ui| {
@@ -532,6 +465,11 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                 if let Some(id) = active {
                     state.format(id, false, ctx);
                 }
+            }
+            Action::QuickFind => {
+                let selected =
+                    active.and_then(|id| state.docs[&id].text.get(window.selection.clone()));
+                window.quick.show(selected);
             }
             Action::Find => {
                 window.search.show_find(active, state, &window.selection);
@@ -637,6 +575,9 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
 
 struct App(Arc<Mutex<State>>);
 impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        theme::BACKGROUND.to_normalized_gamma_f32()
+    }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let windows = {
             let mut state = self.0.lock().unwrap();
@@ -655,7 +596,8 @@ impl eframe::App for App {
                 egui::ViewportId::from_hash_of(id),
                 egui::ViewportBuilder::default()
                     .with_title("MPTE")
-                    .with_inner_size([1000.0, 720.0]),
+                    .with_inner_size([1000.0, 720.0])
+                    .with_min_inner_size([540.0, 360.0]),
                 move |ctx, _| {
                     let mut state = state.lock().unwrap();
                     draw(ctx, &mut state, id);
@@ -669,11 +611,13 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "MPTE",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 760.0]),
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1100.0, 760.0])
+                .with_min_inner_size([540.0, 360.0]),
             ..Default::default()
         },
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            theme::install(&cc.egui_ctx);
             Ok(Box::new(App(Arc::new(Mutex::new(State::new())))))
         }),
     )
