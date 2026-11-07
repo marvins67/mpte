@@ -638,12 +638,17 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1100.0, 760.0])
+        .with_min_inner_size([540.0, 360.0]);
+    // Keep the bundle's Dock icon instead of eframe's default runtime icon.
+    #[cfg(target_os = "macos")]
+    let viewport = viewport.with_icon(egui::IconData::default());
+
     eframe::run_native(
         "MPTE",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1100.0, 760.0])
-                .with_min_inner_size([540.0, 360.0]),
+            viewport,
             ..Default::default()
         },
         Box::new(|cc| {
