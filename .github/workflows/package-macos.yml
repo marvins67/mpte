@@ -1,0 +1,48 @@
+name: Application macOS Intel
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'assets/**'
+      - 'tools/**'
+      - 'scripts/package-macos.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.nvmrc'
+      - '.github/workflows/package-macos.yml'
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Construire l’application autonome
+        run: bash scripts/package-macos.sh
+      - name: Vérifier les formateurs embarqués hors du PATH de développement
+        run: |
+          env -i PATH=/usr/bin:/bin dist/MPTE.app/Contents/Resources/formatters/node/bin/node \
+            --input-type=module - "$PWD/dist/MPTE.app/Contents/Resources/formatters/format.mjs" <<'JS'
+          import assert from 'node:assert/strict';
+          import { pathToFileURL } from 'node:url';
+          const { format } = await import(pathToFileURL(process.argv[2]));
+          for (const [extension, source] of [
+            ['java', 'class Example{int value=1;}'],
+            ['html', '<html><body><p>Bonjour</p></body></html>'],
+            ['xml', '<root><entry>Bonjour</entry></root>'],
+          ]) {
+            const result = await format(source, extension);
+            assert.notEqual(result, source);
+            assert.equal(await format(result, extension), result);
+          }
+          JS
+      - name: Créer l’archive macOS
+        run: ditto -c -k --sequesterRsrc --keepParent dist/MPTE.app dist/MPTE-macOS-Intel.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MPTE-macOS-Intel
+          path: dist/MPTE-macOS-Intel.zip
+          if-no-files-found: error

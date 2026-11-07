@@ -155,17 +155,28 @@ par rangée du bloc. Le collage hors d’un rectangle reste un collage de texte 
 
 ## Application macOS
 
-Sur un Mac, avec la distribution autonome officielle de Node.js sur le PATH :
+Sur un Mac avec Rust et les outils de ligne de commande Xcode :
 
 ```sh
 bash scripts/package-macos.sh
 open dist/MPTE.app
 ```
 
-Si le script signale des bibliothèques externes, il indique le chemin du Node.js
-détecté et les bibliothèques concernées. Si tu utilises nvm, lance `nvm install`
-puis `nvm use` depuis la racine du dépôt pour activer la version indiquée dans
-`.nvmrc`, puis relance le script.
+Le script télécharge le binaire officiel de Node.js pour l’architecture du Mac
+et la version majeure indiquée dans `.nvmrc`. Il vérifie son empreinte SHA-256,
+puis l’utilise pour installer les formateurs et l’intègre au bundle avec sa licence.
+Les archives vérifiées sont conservées dans `target/node-macos/` pour les
+constructions suivantes. Une connexion Internet est nécessaire à la construction.
+Le Node.js installé sur le Mac peut provenir de Homebrew ou de Conda.
+
+L’application produite requiert macOS 13.5 ou ultérieur, comme Node.js 24.
+Elle contient Node.js et les formateurs et peut fonctionner hors ligne.
+Si `dist/MPTE.app` existe déjà, déplace-le avant de reconstruire.
+
+Le workflow GitHub Actions **Application macOS Intel** construit également un
+bundle Intel sur macOS à chaque modification du code ou de l’empaquetage sur
+`main`. Son artefact **MPTE-macOS-Intel** contient l’archive de `MPTE.app`.
+Les formateurs embarqués y sont vérifiés avec le seul PATH système.
 
 Le script embarque l’icône « La ligne active » pour le Finder et le Dock. Sa
 source est `assets/MPTE.svg` et le bundle utilise `assets/MPTE.icns`.
