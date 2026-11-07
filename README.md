@@ -56,6 +56,11 @@ Cmd+Maj+N nouvelle fenêtre, Cmd+Maj+F formater, Cmd+Q quitter.
 Cmd+F ouvre la recherche (Ctrl+F sous Linux).
 Couper/copier/coller, sélection et annulation utilisent les raccourcis habituels du composant.
 
+Cmd++ et Cmd+- (Ctrl sous Linux) agrandissent et réduisent l’affichage.
+Le zoom utilisé est enregistré dans les préférences de l’utilisateur et restauré
+au prochain lancement. Cmd+0 revient au zoom normal. Seul ce réglage est mémorisé.
+Les documents ouverts au moment de quitter ne sont pas rouverts au lancement.
+
 ```sh
 npm test --prefix tools
 cargo test --locked

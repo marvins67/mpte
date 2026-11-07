@@ -603,14 +603,45 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
     }
 }
 
-struct App(Arc<Mutex<State>>);
+const ZOOM_PREFERENCE: &str = "zoom_factor";
+
+struct App {
+    state: Arc<Mutex<State>>,
+    ctx: egui::Context,
+}
+
+impl App {
+    fn new(ctx: &egui::Context, storage: Option<&dyn eframe::Storage>) -> Self {
+        theme::install(ctx);
+        if let Some(zoom) = storage
+            .and_then(|storage| storage.get_string(ZOOM_PREFERENCE))
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|zoom| (0.2..=5.0).contains(zoom))
+        {
+            ctx.set_zoom_factor(zoom);
+        }
+        Self {
+            state: Arc::new(Mutex::new(State::new())),
+            ctx: ctx.clone(),
+        }
+    }
+}
+
 impl eframe::App for App {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(ZOOM_PREFERENCE, self.ctx.zoom_factor().to_string());
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         theme::BACKGROUND.to_normalized_gamma_f32()
     }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let windows = {
-            let mut state = self.0.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             state.receive();
             draw(ctx, &mut state, 0);
             state
@@ -621,7 +652,7 @@ impl eframe::App for App {
                 .collect::<Vec<_>>()
         };
         for id in windows {
-            let state = self.0.clone();
+            let state = self.state.clone();
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of(id),
                 egui::ViewportBuilder::default()
@@ -649,18 +680,106 @@ fn main() -> eframe::Result {
         "MPTE",
         eframe::NativeOptions {
             viewport,
+            persist_window: false,
             ..Default::default()
         },
-        Box::new(|cc| {
-            theme::install(&cc.egui_ctx);
-            Ok(Box::new(App(Arc::new(Mutex::new(State::new())))))
-        }),
+        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx, cc.storage)))),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::Storage as _;
+
+    #[derive(Default)]
+    struct TestStorage(BTreeMap<String, String>);
+
+    impl eframe::Storage for TestStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.into(), value);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    fn zoom_shortcut(ctx: &egui::Context, key: Key) {
+        let input = egui::RawInput {
+            modifiers: Modifiers::COMMAND,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |_| {});
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+    }
+
+    #[test]
+    fn zoom_shortcuts_are_saved_without_restoring_documents() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, None);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("document.txt");
+        std::fs::write(&path, "Document ouvert avant de quitter").unwrap();
+        {
+            let mut state = app.state.lock().unwrap();
+            let mut window = state.windows.remove(&0).unwrap();
+            state.open(&mut window, path);
+            assert!(state.docs[&window.tabs[window.active]].path.is_some());
+            state.windows.insert(0, window);
+        }
+
+        zoom_shortcut(&ctx, Key::Plus);
+        zoom_shortcut(&ctx, Key::Plus);
+        zoom_shortcut(&ctx, Key::Minus);
+        assert!((ctx.zoom_factor() - 1.1).abs() < f32::EPSILON);
+
+        let mut storage = TestStorage::default();
+        eframe::App::save(&mut app, &mut storage);
+        assert_eq!(storage.0.len(), 1);
+        assert_eq!(storage.get_string(ZOOM_PREFERENCE).as_deref(), Some("1.1"));
+        assert!(!eframe::App::persist_egui_memory(&app));
+
+        let restored_ctx = egui::Context::default();
+        let mut restored = App::new(&restored_ctx, Some(&storage));
+        let _ = restored_ctx.run(egui::RawInput::default(), |_| {});
+        assert!((restored_ctx.zoom_factor() - 1.1).abs() < f32::EPSILON);
+        {
+            let state = restored.state.lock().unwrap();
+            assert_eq!(state.docs.len(), 1);
+            let doc = state.docs.values().next().unwrap();
+            assert!(doc.path.is_none());
+            assert!(doc.text.is_empty());
+        }
+
+        zoom_shortcut(&restored_ctx, Key::Num0);
+        eframe::App::save(&mut restored, &mut storage);
+        let reset_ctx = egui::Context::default();
+        let _reset = App::new(&reset_ctx, Some(&storage));
+        let _ = reset_ctx.run(egui::RawInput::default(), |_| {});
+        assert_eq!(reset_ctx.zoom_factor(), 1.0);
+    }
+
+    #[test]
+    fn invalid_zoom_preferences_use_the_default() {
+        for value in ["", "invalide", "NaN", "inf", "-1", "0", "0.1", "5.1"] {
+            let storage = TestStorage(BTreeMap::from([(ZOOM_PREFERENCE.into(), value.into())]));
+            let ctx = egui::Context::default();
+            let _app = App::new(&ctx, Some(&storage));
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+            assert_eq!(ctx.zoom_factor(), 1.0, "{value}");
+        }
+    }
+
     fn render(state: &mut State) {
         let ctx = egui::Context::default();
         let input = egui::RawInput {
