@@ -56,9 +56,11 @@ Cmd+Maj+N nouvelle fenêtre, Cmd+Maj+F formater, Cmd+Q quitter.
 Cmd+F ouvre la recherche (Ctrl+F sous Linux).
 Couper/copier/coller, sélection et annulation utilisent les raccourcis habituels du composant.
 
-Cmd++ et Cmd+- (Ctrl sous Linux) agrandissent et réduisent l’affichage.
-Le zoom utilisé est enregistré dans les préférences de l’utilisateur et restauré
-au prochain lancement. Cmd+0 revient au zoom normal. Seul ce réglage est mémorisé.
+Cmd++ et Cmd+- (Ctrl sous Linux) augmentent et réduisent uniquement la police de
+l’éditeur et des numéros de ligne, par pas d’un point, entre 8 et 72 points.
+La taille choisie est enregistrée dans les préférences de l’utilisateur et restaurée
+au prochain lancement. Cmd+0 revient à 14 points. Seul ce réglage est mémorisé.
+Une ancienne préférence de zoom est convertie en taille de police.
 Les documents ouverts au moment de quitter ne sont pas rouverts au lancement.
 
 ```sh

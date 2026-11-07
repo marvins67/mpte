@@ -131,7 +131,11 @@ pub fn show(
             let background = ui.painter().add(Shape::Noop);
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.horizontal_top(|ui| {
-                let font = FontId::monospace(crate::theme::EDITOR_FONT_SIZE);
+                let font = job
+                    .sections
+                    .first()
+                    .map(|section| section.format.font_id.clone())
+                    .unwrap_or_else(|| FontId::monospace(crate::theme::EDITOR_FONT_SIZE));
                 let line_height = ui.fonts(|f| f.row_height(&font));
                 let space = ui.fonts(|f| f.glyph_width(&font, ' '));
                 let mut visible = doc.view.outline.visibility(&doc.view.collapsed);

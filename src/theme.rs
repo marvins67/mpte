@@ -11,6 +11,8 @@ pub const BLUE: Color32 = Color32::from_rgb(35, 89, 181);
 pub const BLUE_LIGHT: Color32 = Color32::from_rgb(232, 240, 255);
 pub const CURRENT_LINE: Color32 = Color32::from_rgb(238, 243, 253);
 pub const EDITOR_FONT_SIZE: f32 = 14.0;
+pub const MIN_EDITOR_FONT_SIZE: f32 = 8.0;
+pub const MAX_EDITOR_FONT_SIZE: f32 = 72.0;
 
 pub fn install(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();

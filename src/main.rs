@@ -56,6 +56,7 @@ struct FormatResult {
     save: bool,
 }
 struct State {
+    editor_font_size: f32,
     docs: BTreeMap<Id, Document>,
     windows: BTreeMap<Id, EditorWindow>,
     next: Id,
@@ -74,6 +75,7 @@ impl State {
         let mut themes = ThemeSet::load_defaults();
         themes.themes.insert("MPTE Light".into(), theme::syntax());
         let mut state = Self {
+            editor_font_size: theme::EDITOR_FONT_SIZE,
             docs: BTreeMap::new(),
             windows: BTreeMap::new(),
             next: 1,
@@ -238,16 +240,16 @@ impl State {
 }
 
 fn layout(state: &State, text: &str, extension: &str, dark: bool) -> egui::text::LayoutJob {
-    if text.len() > 2 * 1024 * 1024 {
+    if text.is_empty() || text.len() > 2 * 1024 * 1024 {
         return egui::text::LayoutJob::simple(
             text.to_owned(),
-            FontId::monospace(theme::EDITOR_FONT_SIZE),
+            FontId::monospace(state.editor_font_size),
             if dark { Color32::WHITE } else { Color32::BLACK },
             f32::INFINITY,
         );
     }
     let mut job = egui::text::LayoutJob::default();
-    let font = FontId::monospace(theme::EDITOR_FONT_SIZE);
+    let font = FontId::monospace(state.editor_font_size);
     let syntax = state
         .syntax
         .find_syntax_by_extension(extension)
@@ -341,7 +343,21 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             Close::Window
         }));
     }
+    let previous_font_size = state.editor_font_size;
     ctx.input_mut(|i| {
+        use egui::gui_zoom::kb_shortcuts::{ZOOM_IN, ZOOM_IN_SECONDARY, ZOOM_OUT, ZOOM_RESET};
+
+        if i.consume_shortcut(&ZOOM_IN) || i.consume_shortcut(&ZOOM_IN_SECONDARY) {
+            state.editor_font_size =
+                (state.editor_font_size + 1.0).min(theme::MAX_EDITOR_FONT_SIZE);
+        }
+        if i.consume_shortcut(&ZOOM_OUT) {
+            state.editor_font_size =
+                (state.editor_font_size - 1.0).max(theme::MIN_EDITOR_FONT_SIZE);
+        }
+        if i.consume_shortcut(&ZOOM_RESET) {
+            state.editor_font_size = theme::EDITOR_FONT_SIZE;
+        }
         for (modifiers, key, action) in [
             (
                 Modifiers::COMMAND | Modifiers::SHIFT,
@@ -376,6 +392,13 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             actions.push(Action::Close(Close::Quit));
         }
     });
+    if state.editor_font_size != previous_font_size {
+        ctx.request_repaint();
+        ctx.request_repaint_of(egui::ViewportId::ROOT);
+        for id in state.windows.keys().filter(|&&id| id != 0) {
+            ctx.request_repaint_of(egui::ViewportId::from_hash_of(id));
+        }
+    }
     chrome::toolbar(ctx, state, &window, &mut actions);
     search_ui::quick_bar(ctx, state, &mut window, window_id, &mut actions);
     chrome::status(ctx, state, &window);
@@ -391,13 +414,31 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         let revision = doc.revision;
         let dark = ctx.style().visuals.dark_mode;
         let cache_id = egui::Id::new(("syntax", id));
-        let cached =
-            ctx.data_mut(|d| d.get_temp::<(u64, bool, String, egui::text::LayoutJob)>(cache_id));
+        let cached = ctx
+            .data_mut(|d| d.get_temp::<(u64, bool, String, f32, egui::text::LayoutJob)>(cache_id));
         let mut job = match cached {
-            Some((r, d, e, job)) if r == revision && d == dark && e == extension => job,
+            Some((r, d, e, size, job))
+                if r == revision
+                    && d == dark
+                    && e == extension
+                    && size == state.editor_font_size =>
+            {
+                job
+            }
             _ => layout(state, &doc.text, &extension, dark),
         };
-        ctx.data_mut(|d| d.insert_temp(cache_id, (revision, dark, extension.clone(), job.clone())));
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                cache_id,
+                (
+                    revision,
+                    dark,
+                    extension.clone(),
+                    state.editor_font_size,
+                    job.clone(),
+                ),
+            )
+        });
         window.quick.highlight(id, revision, &mut job);
         {
             if let Some((did, rev, range)) = &window.search.highlight {
@@ -603,33 +644,49 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
     }
 }
 
-const ZOOM_PREFERENCE: &str = "zoom_factor";
+const FONT_SIZE_PREFERENCE: &str = "editor_font_size";
 
 struct App {
     state: Arc<Mutex<State>>,
-    ctx: egui::Context,
 }
 
 impl App {
     fn new(ctx: &egui::Context, storage: Option<&dyn eframe::Storage>) -> Self {
         theme::install(ctx);
-        if let Some(zoom) = storage
-            .and_then(|storage| storage.get_string(ZOOM_PREFERENCE))
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
+        ctx.set_zoom_factor(1.0);
+        let mut state = State::new();
+        if let Some(font_size) = storage
+            .and_then(|storage| storage.get_string(FONT_SIZE_PREFERENCE))
             .and_then(|value| value.parse::<f32>().ok())
-            .filter(|zoom| (0.2..=5.0).contains(zoom))
+            .filter(|size| {
+                (theme::MIN_EDITOR_FONT_SIZE..=theme::MAX_EDITOR_FONT_SIZE).contains(size)
+            })
+            .or_else(|| {
+                storage
+                    .and_then(|storage| storage.get_string("zoom_factor"))
+                    .and_then(|value| value.parse::<f32>().ok())
+                    .filter(|zoom| (0.2..=5.0).contains(zoom))
+                    .map(|zoom| {
+                        (theme::EDITOR_FONT_SIZE * zoom)
+                            .clamp(theme::MIN_EDITOR_FONT_SIZE, theme::MAX_EDITOR_FONT_SIZE)
+                    })
+            })
         {
-            ctx.set_zoom_factor(zoom);
+            state.editor_font_size = font_size;
         }
         Self {
-            state: Arc::new(Mutex::new(State::new())),
-            ctx: ctx.clone(),
+            state: Arc::new(Mutex::new(state)),
         }
     }
 }
 
 impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string(ZOOM_PREFERENCE, self.ctx.zoom_factor().to_string());
+        storage.set_string(
+            FONT_SIZE_PREFERENCE,
+            self.state.lock().unwrap().editor_font_size.to_string(),
+        );
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -707,7 +764,7 @@ mod tests {
         fn flush(&mut self) {}
     }
 
-    fn zoom_shortcut(ctx: &egui::Context, key: Key) {
+    fn font_size_shortcut(app: &App, ctx: &egui::Context, key: Key) -> egui::FullOutput {
         let input = egui::RawInput {
             modifiers: Modifiers::COMMAND,
             events: vec![egui::Event::Key {
@@ -719,12 +776,14 @@ mod tests {
             }],
             ..Default::default()
         };
-        let _ = ctx.run(input, |_| {});
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let _ = ctx.run(input, |ctx| draw(ctx, &mut app.state.lock().unwrap(), 0));
+        ctx.run(egui::RawInput::default(), |ctx| {
+            draw(ctx, &mut app.state.lock().unwrap(), 0)
+        })
     }
 
     #[test]
-    fn zoom_shortcuts_are_saved_without_restoring_documents() {
+    fn font_size_shortcuts_are_saved_without_zooming_or_restoring_documents() {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx, None);
         let directory = tempfile::tempdir().unwrap();
@@ -738,21 +797,33 @@ mod tests {
             state.windows.insert(0, window);
         }
 
-        zoom_shortcut(&ctx, Key::Plus);
-        zoom_shortcut(&ctx, Key::Plus);
-        zoom_shortcut(&ctx, Key::Minus);
-        assert!((ctx.zoom_factor() - 1.1).abs() < f32::EPSILON);
+        let body_font = ctx.style().text_styles[&egui::TextStyle::Body].clone();
+        let _ = font_size_shortcut(&app, &ctx, Key::Plus);
+        let _ = font_size_shortcut(&app, &ctx, Key::Plus);
+        let output = font_size_shortcut(&app, &ctx, Key::Minus);
+        assert_eq!(ctx.zoom_factor(), 1.0);
+        assert_eq!(ctx.style().text_styles[&egui::TextStyle::Body], body_font);
+        assert_eq!(app.state.lock().unwrap().editor_font_size, 15.0);
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.job.text == "Document ouvert avant de quitter"
+                    && text.galley.job.sections.iter().all(|section| section.format.font_id.size == 15.0))
+        }));
 
         let mut storage = TestStorage::default();
         eframe::App::save(&mut app, &mut storage);
         assert_eq!(storage.0.len(), 1);
-        assert_eq!(storage.get_string(ZOOM_PREFERENCE).as_deref(), Some("1.1"));
+        assert_eq!(
+            storage.get_string(FONT_SIZE_PREFERENCE).as_deref(),
+            Some("15")
+        );
         assert!(!eframe::App::persist_egui_memory(&app));
 
         let restored_ctx = egui::Context::default();
         let mut restored = App::new(&restored_ctx, Some(&storage));
         let _ = restored_ctx.run(egui::RawInput::default(), |_| {});
-        assert!((restored_ctx.zoom_factor() - 1.1).abs() < f32::EPSILON);
+        assert_eq!(restored_ctx.zoom_factor(), 1.0);
+        assert_eq!(restored.state.lock().unwrap().editor_font_size, 15.0);
         {
             let state = restored.state.lock().unwrap();
             assert_eq!(state.docs.len(), 1);
@@ -761,23 +832,69 @@ mod tests {
             assert!(doc.text.is_empty());
         }
 
-        zoom_shortcut(&restored_ctx, Key::Num0);
+        let _ = font_size_shortcut(&restored, &restored_ctx, Key::Num0);
         eframe::App::save(&mut restored, &mut storage);
         let reset_ctx = egui::Context::default();
-        let _reset = App::new(&reset_ctx, Some(&storage));
-        let _ = reset_ctx.run(egui::RawInput::default(), |_| {});
-        assert_eq!(reset_ctx.zoom_factor(), 1.0);
+        let reset = App::new(&reset_ctx, Some(&storage));
+        assert_eq!(
+            reset.state.lock().unwrap().editor_font_size,
+            theme::EDITOR_FONT_SIZE
+        );
     }
 
     #[test]
-    fn invalid_zoom_preferences_use_the_default() {
-        for value in ["", "invalide", "NaN", "inf", "-1", "0", "0.1", "5.1"] {
-            let storage = TestStorage(BTreeMap::from([(ZOOM_PREFERENCE.into(), value.into())]));
+    fn invalid_font_size_preferences_use_the_default() {
+        for value in ["", "invalide", "NaN", "inf", "-1", "0", "7.9", "72.1"] {
+            let storage = TestStorage(BTreeMap::from([(
+                FONT_SIZE_PREFERENCE.into(),
+                value.into(),
+            )]));
             let ctx = egui::Context::default();
-            let _app = App::new(&ctx, Some(&storage));
-            let _ = ctx.run(egui::RawInput::default(), |_| {});
-            assert_eq!(ctx.zoom_factor(), 1.0, "{value}");
+            let app = App::new(&ctx, Some(&storage));
+            assert_eq!(
+                app.state.lock().unwrap().editor_font_size,
+                theme::EDITOR_FONT_SIZE,
+                "{value}"
+            );
         }
+    }
+
+    #[test]
+    fn legacy_zoom_is_converted_to_font_size_and_new_preferences_take_precedence() {
+        let mut storage = TestStorage(BTreeMap::from([("zoom_factor".into(), "1.5".into())]));
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, Some(&storage));
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        assert_eq!(ctx.zoom_factor(), 1.0);
+        assert_eq!(app.state.lock().unwrap().editor_font_size, 21.0);
+        eframe::App::save(&mut app, &mut storage);
+        storage.set_string("zoom_factor", "2".into());
+        let restored = App::new(&egui::Context::default(), Some(&storage));
+        assert_eq!(restored.state.lock().unwrap().editor_font_size, 21.0);
+    }
+
+    #[test]
+    fn font_size_shortcuts_respect_limits_and_accept_equals() {
+        let ctx = egui::Context::default();
+        let app = App::new(&ctx, None);
+        app.state.lock().unwrap().editor_font_size = theme::MAX_EDITOR_FONT_SIZE;
+        let _ = font_size_shortcut(&app, &ctx, Key::Equals);
+        assert_eq!(
+            app.state.lock().unwrap().editor_font_size,
+            theme::MAX_EDITOR_FONT_SIZE
+        );
+        app.state.lock().unwrap().editor_font_size = theme::MIN_EDITOR_FONT_SIZE;
+        let _ = font_size_shortcut(&app, &ctx, Key::Minus);
+        assert_eq!(
+            app.state.lock().unwrap().editor_font_size,
+            theme::MIN_EDITOR_FONT_SIZE
+        );
+        let _ = font_size_shortcut(&app, &ctx, Key::Equals);
+        assert_eq!(
+            app.state.lock().unwrap().editor_font_size,
+            theme::MIN_EDITOR_FONT_SIZE + 1.0
+        );
+        assert_eq!(ctx.zoom_factor(), 1.0);
     }
 
     fn render(state: &mut State) {
@@ -831,7 +948,8 @@ mod tests {
     }
     #[test]
     fn syntax_layout_preserves_every_character() {
-        let state = State::new();
+        let mut state = State::new();
+        state.editor_font_size = 24.0;
         for (ext, text) in [
             ("json", "{\"été\":1}\n"),
             ("xml", "<p>été</p>\n"),
@@ -841,6 +959,21 @@ mod tests {
             let job = layout(&state, text, ext, false);
             assert_eq!(job.text, text);
             assert!(job.sections.len() > 1, "Coloration manquante pour {ext}");
+            assert!(
+                job.sections
+                    .iter()
+                    .all(|section| section.format.font_id.size == 24.0)
+            );
+        }
+        for text in [String::new(), "texte".repeat(500_000)] {
+            let job = layout(&state, &text, "txt", false);
+            assert_eq!(job.text, text);
+            assert!(!job.sections.is_empty());
+            assert!(
+                job.sections
+                    .iter()
+                    .all(|section| section.format.font_id.size == 24.0)
+            );
         }
     }
     #[test]
