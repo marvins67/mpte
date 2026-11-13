@@ -300,6 +300,20 @@ pub fn partition_controls(
                     }
                 }
                 ui.label(partition.selection_size(window.selection.clone()));
+                if ui.button("Séparation")
+                    .on_hover_text("Insérer un trait sur toute la largeur utile, après la ligne du curseur")
+                    .clicked()
+                {
+                    actions.push(Action::PartitionSeparator);
+                }
+                let id = window.tabs[window.active];
+                let caret = crate::partition::caret(ctx, id, &doc.text);
+                if ui.add(egui::Button::new("Centrer").selected(partition.is_centered(caret)))
+                    .on_hover_text("Centrer ou aligner à gauche uniquement la ligne du curseur")
+                    .clicked()
+                {
+                    actions.push(Action::PartitionCenter);
+                }
                 ui.label(format!("A4 · {} page(s) · marges 15 mm", doc.partition_pages));
                 if doc.partition_overflow > 0 {
                     ui.colored_label(Color32::from_rgb(185, 40, 35), format!("{} ligne(s) trop longue(s)", doc.partition_overflow))

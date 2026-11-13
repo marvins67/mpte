@@ -50,6 +50,8 @@ enum Action {
     QuickFind,
     Partition,
     PartitionSize(f32, bool),
+    PartitionSeparator,
+    PartitionCenter,
 }
 struct FormatResult {
     id: Id,
@@ -565,6 +567,29 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                     }
                 }
             }
+            Action::PartitionSeparator | Action::PartitionCenter => {
+                if let Some(id) = active {
+                    let doc = state.docs.get_mut(&id).unwrap();
+                    let caret = partition::caret(ctx, id, &doc.text);
+                    if let Some(partition) = doc.partition.as_mut().filter(|p| p.active) {
+                        partition.sync(&doc.text, window.selection.clone());
+                        if matches!(action, Action::PartitionSeparator) {
+                            if let Some(range) = partition.insert_separator(
+                                &mut doc.text,
+                                caret,
+                                window.selection.clone(),
+                            ) {
+                                window.selection = range.clone();
+                                window.jump = Some((id, range));
+                                doc.revision += 1;
+                            }
+                        } else {
+                            partition.toggle_center(caret, window.selection.clone());
+                        }
+                        ctx.memory_mut(|m| m.request_focus(egui::Id::new(("text", id))));
+                    }
+                }
+            }
             Action::Open => {
                 if let Some(paths) = rfd::FileDialog::new().pick_files() {
                     for path in paths {
@@ -922,6 +947,100 @@ mod tests {
             }],
         );
         score_frame(app, ctx, 1100.0, vec![])
+    }
+
+    #[test]
+    fn score_line_buttons_use_primary_caret_restore_focus_and_undo() {
+        let ctx = egui::Context::default();
+        let app = App::new(&ctx, None);
+        let text = "été\n🦀 Am\nfin";
+        let id = {
+            let mut state = app.state.lock().unwrap();
+            state.error = None;
+            let id = state.windows[&0].tabs[0];
+            let doc = state.docs.get_mut(&id).unwrap();
+            doc.text = text.into();
+            doc.toggle_partition();
+            id
+        };
+        let editor_id = egui::Id::new(("text", id));
+        let _ = score_frame(&app, &ctx, 1100., vec![]);
+        let mut edit = egui::TextEdit::load_state(&ctx, editor_id).unwrap();
+        edit.cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(6),
+            )));
+        edit.store(&ctx, editor_id);
+        let _ = score_frame(&app, &ctx, 1100., vec![]);
+        let output = score_frame(&app, &ctx, 1100., vec![]);
+        let output = score_click(&app, &ctx, caption_position(&output, "Centrer"));
+        {
+            let state = app.state.lock().unwrap();
+            let doc = &state.docs[&id];
+            let score = doc.partition.as_ref().unwrap();
+            assert!(!score.is_centered(0));
+            assert!(score.is_centered(6));
+            assert!(!score.is_centered(text.len()));
+            assert_eq!(doc.text, text);
+        }
+        assert!(ctx.memory(|m| m.has_focus(editor_id)));
+        let output = score_click(&app, &ctx, caption_position(&output, "Centrer"));
+        assert!(
+            !app.state.lock().unwrap().docs[&id]
+                .partition
+                .as_ref()
+                .unwrap()
+                .is_centered(6)
+        );
+        let output = score_click(&app, &ctx, caption_position(&output, "Séparation"));
+        {
+            let state = app.state.lock().unwrap();
+            assert_eq!(state.docs[&id].text, "été\n🦀 Am\n─\nfin");
+            assert_eq!(
+                partition::caret(&ctx, id, &state.docs[&id].text),
+                "été\n🦀 Am\n─\n".len()
+            );
+        }
+        assert!(ctx.memory(|m| m.has_focus(editor_id)));
+        // The rule is an actual full-width row in the TextEdit geometry.
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t)
+            if t.galley.job.text.contains('─') && t.galley.rows[2].rect.width() == partition::CONTENT_WIDTH)));
+        let _ = score_frame(
+            &app,
+            &ctx,
+            1100.,
+            vec![egui::Event::Key {
+                key: Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            }],
+        );
+        assert_eq!(app.state.lock().unwrap().docs[&id].text, text);
+        let narrow = score_frame(&app, &ctx, 540., vec![]);
+        for caption in ["Centrer", "Séparation"] {
+            let pos = caption_position(&narrow, caption);
+            assert!(pos.x > 0.0 && pos.x < 540.0);
+            assert!(pos.y < 250.0);
+        }
+        // Reverse the selection: the active caret is now on the first line.
+        let _ = score_frame(&app, &ctx, 1100., vec![]);
+        let mut edit = egui::TextEdit::load_state(&ctx, editor_id).unwrap();
+        edit.cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(6),
+                egui::text::CCursor::new(0),
+            )));
+        edit.store(&ctx, editor_id);
+        let _ = score_frame(&app, &ctx, 1100., vec![]);
+        let output = score_frame(&app, &ctx, 1100., vec![]);
+        let _ = score_click(&app, &ctx, caption_position(&output, "Centrer"));
+        let state = app.state.lock().unwrap();
+        let score = state.docs[&id].partition.as_ref().unwrap();
+        assert!(score.is_centered(0));
+        assert!(!score.is_centered(6));
     }
 
     #[test]

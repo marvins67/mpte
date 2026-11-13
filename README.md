@@ -130,9 +130,20 @@ Sélectionner du texte, puis utiliser **A−**, **A+** ou **Cmd− / Cmd+** pour
 réduire ou agrandir uniquement cette sélection, de **8 à 72 points**. **14 pt**
 ou **Cmd+0** rétablit la sélection à 14 points. Sans sélection, ces commandes
 ne modifient rien. **Cmd+Z / Cmd+Maj+Z** annulent ou rétablissent les modifications
-de texte et de taille en mode Partition. La taille globale du mode normal reste
-indépendante. Le texte inséré reprend la taille du caractère remplacé, ou celle
+de texte, de taille et de mise en page en mode Partition. La taille globale du
+mode normal reste indépendante. Le texte inséré reprend la taille du caractère remplacé, ou celle
 du caractère précédent en fin de document.
+
+**Séparation** insère un trait horizontal sur toute la largeur utile de la
+feuille, entre les marges, après la ligne du curseur (ou sur cette ligne si elle
+est vide). Le curseur passe à la ligne suivante. Dans le fichier texte et en mode
+normal, ce trait est représenté par un caractère `─` sur sa propre ligne ; il
+peut être supprimé comme du texte.
+
+**Centrer** centre uniquement la ligne où se trouve le curseur. Un second clic
+la réaligne à gauche. Même avec une sélection sur plusieurs lignes, seule celle
+du curseur actif est concernée. Le bouton reste enfoncé sur une ligne centrée.
+Le centrage n’ajoute aucun espace au texte et une nouvelle ligne commence à gauche.
 
 Les lignes ne sont pas coupées automatiquement pour préserver l’alignement des
 accords et des paroles. Une ligne qui dépasse la marge droite est signalée en
@@ -142,13 +153,14 @@ sauts de page visuels n’ajoutent aucun caractère au document. La sélection
 rectangulaire reste disponible dans le mode normal.
 
 **Enregistrer** conserve le fichier texte UTF-8 et crée à côté un fichier
-`nom-du-fichier.txt.mpte-partition.json` contenant les tailles et le mode choisi.
+`nom-du-fichier.txt.mpte-partition.json` contenant les tailles, les centrages,
+les séparations et le mode choisi.
 Garder ces deux fichiers ensemble lors d’une copie ou d’un déplacement.
 **Enregistrer sous** crée aussi le compagnon de la nouvelle copie. Une modification
-de taille est signalée comme une modification à enregistrer. Repasser en mode
-normal conserve les tailles pour la prochaine activation du mode Partition.
+de taille ou de mise en page est signalée comme une modification à enregistrer.
+Repasser en mode normal conserve ces réglages pour la prochaine activation du mode Partition.
 Si le texte a été modifié par une autre application, MPTE ouvre le texte et
-signale que les anciennes tailles n’ont pas été appliquées. Les modifications
+signale que l’ancienne mise en page n’a pas été appliquée. Les modifications
 externes du compagnon sont détectées avant l’enregistrement.
 
 Ces pages sont des repères d’édition ; l’impression et l’export PDF ne sont pas

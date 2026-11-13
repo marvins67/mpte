@@ -221,6 +221,35 @@ fn partition_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     #[test]
+    fn partition_line_formatting_is_dirty_saved_and_restored_with_bom_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partition.txt");
+        fs::write(&path, "\u{feff}Titre\r\nAm\r\n").unwrap();
+        let mut doc = Document::open(&path).unwrap();
+        doc.toggle_partition();
+        doc.save(&path).unwrap();
+        let partition = doc.partition.as_mut().unwrap();
+        partition.toggle_center(0, 0..0);
+        assert!(doc.dirty());
+        doc.partition
+            .as_mut()
+            .unwrap()
+            .insert_separator(&mut doc.text, 0, 0..0);
+        let expected = doc.partition.as_ref().unwrap().data();
+        doc.save(&path).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "\u{feff}Titre\r\n─\r\nAm\r\n"
+        );
+        let mut restored = Document::open(&path).unwrap();
+        assert!(!restored.dirty());
+        assert_eq!(restored.partition.as_ref().unwrap().data(), expected);
+        restored.toggle_partition();
+        restored.toggle_partition();
+        assert_eq!(restored.partition.as_ref().unwrap().data(), expected);
+    }
+
+    #[test]
     fn partition_sizes_roundtrip_without_changing_plain_text_or_line_endings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chant.txt");
