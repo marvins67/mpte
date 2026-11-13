@@ -47,6 +47,12 @@ pub fn toolbar(
                     Some(Action::Format),
                 ),
                 (
+                    Icon::Partition,
+                    "Partition",
+                    "Basculer entre le mode normal et le mode Partition A4",
+                    window.tabs.get(window.active).map(|_| Action::Partition),
+                ),
+                (
                     Icon::NewWindow,
                     "Fenêtre",
                     "Nouvelle fenêtre · Cmd/Ctrl+Maj+N",
@@ -89,7 +95,12 @@ pub fn toolbar(
             let primary = |icon| {
                 matches!(
                     icon,
-                    Icon::New | Icon::Folder | Icon::Save | Icon::Format | Icon::Search
+                    Icon::New
+                        | Icon::Folder
+                        | Icon::Save
+                        | Icon::Format
+                        | Icon::Search
+                        | Icon::Partition
                 )
             };
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -120,7 +131,12 @@ pub fn toolbar(
                                 icon,
                                 caption,
                                 tooltip,
-                                matches!(icon, Icon::Search),
+                                matches!(icon, Icon::Search)
+                                    || matches!(icon, Icon::Partition)
+                                        && window
+                                            .tabs
+                                            .get(window.active)
+                                            .is_some_and(|id| state.docs[id].partition_active()),
                             )
                         })
                         .inner
@@ -246,6 +262,50 @@ pub fn toolbar(
                         }
                     });
                 });
+        });
+}
+
+pub fn partition_controls(
+    ctx: &egui::Context,
+    state: &State,
+    window: &EditorWindow,
+    actions: &mut Vec<Action>,
+) {
+    let Some(doc) = window
+        .tabs
+        .get(window.active)
+        .and_then(|id| state.docs.get(id))
+    else {
+        return;
+    };
+    let Some(partition) = doc.partition.as_ref().filter(|p| p.active) else {
+        return;
+    };
+    egui::TopBottomPanel::top("partition-controls")
+        .frame(theme::panel_frame(theme::TOOLBAR).inner_margin(egui::Margin::symmetric(10, 4)))
+        .show(ctx, |ui| {
+            ui.style_mut().override_font_id = Some(FontId::proportional(13.0));
+            ui.spacing_mut().button_padding = vec2(8.0, 4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Partition · Roboto Mono");
+                let valid = !window.selection.is_empty() && doc.text.get(window.selection.clone()).is_some();
+                for (label, tooltip, delta, reset) in [
+                    ("A−", "Réduire la sélection · Cmd/Ctrl+−", -1.0, false),
+                    ("A+", "Agrandir la sélection · Cmd/Ctrl++", 1.0, false),
+                    ("14 pt", "Rétablir la sélection à 14 points · Cmd/Ctrl+0", 0.0, true),
+                ] {
+                    let response = ui.add_enabled(valid, egui::Button::new(label)).on_hover_text(tooltip);
+                    if response.clicked() {
+                        actions.push(Action::PartitionSize(delta, reset));
+                    }
+                }
+                ui.label(partition.selection_size(window.selection.clone()));
+                ui.label(format!("A4 · {} page(s) · marges 15 mm", doc.partition_pages));
+                if doc.partition_overflow > 0 {
+                    ui.colored_label(Color32::from_rgb(185, 40, 35), format!("{} ligne(s) trop longue(s)", doc.partition_overflow))
+                        .on_hover_text("Les traits rouges signalent les lignes qui dépassent la marge A4. Réduisez leur taille ou ajoutez un retour à la ligne.");
+                }
+            });
         });
 }
 

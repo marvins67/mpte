@@ -15,6 +15,17 @@ pub const MIN_EDITOR_FONT_SIZE: f32 = 8.0;
 pub const MAX_EDITOR_FONT_SIZE: f32 = 72.0;
 
 pub fn install(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Roboto Mono".into(),
+        egui::FontData::from_static(include_bytes!("../assets/fonts/RobotoMono.ttf")).into(),
+    );
+    let mut family = vec!["Roboto Mono".into()];
+    family.extend(fonts.families[&egui::FontFamily::Monospace].clone());
+    fonts
+        .families
+        .insert(crate::partition::font_family(), family);
+    ctx.set_fonts(fonts);
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::light();
     style.visuals.override_text_color = Some(TEXT);
@@ -101,6 +112,7 @@ pub enum Icon {
     Detach,
     Quit,
     Format,
+    Partition,
     Search,
     File,
     Code,
@@ -125,6 +137,18 @@ pub fn icon(ui: &egui::Ui, rect: Rect, kind: Icon, color: Color32) {
         ))
     };
     match kind {
+        Icon::Partition => {
+            path(&[
+                (0.15, 0.95),
+                (0.15, 0.05),
+                (0.85, 0.05),
+                (0.85, 0.95),
+                (0.15, 0.95),
+            ]);
+            for y in [0.3, 0.45, 0.6, 0.75] {
+                path(&[(0.28, y), (0.72, y)]);
+            }
+        }
         Icon::Search => {
             ui.painter()
                 .circle_stroke(p(0.42, 0.42), rect.width() * 0.34, stroke);

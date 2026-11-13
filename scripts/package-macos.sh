@@ -100,6 +100,7 @@ cp tools/format.mjs "$bundle/Contents/Resources/formatters/"
 cp -R tools/node_modules "$bundle/Contents/Resources/formatters/"
 cp "$node_binary" "$bundle/Contents/Resources/formatters/node/bin/node"
 cp "$node_dir/LICENSE" "$bundle/Contents/Resources/Node-LICENSE.txt"
+cp assets/fonts/OFL.txt "$bundle/Contents/Resources/RobotoMono-LICENSE.txt"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

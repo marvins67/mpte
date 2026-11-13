@@ -15,6 +15,7 @@ Rust + egui/eframe, rendu OpenGL, sans navigateur embarqué. Interface en franç
 - Interface claire avec une barre d’outils compacte à boutons et des onglets soulignés en bleu.
 - Recherche rapide intégrée et boîte de recherche avancée à trois onglets, accessible par Cmd+F.
 - Taille de police de l’éditeur réglable au clavier et mémorisée entre les lancements.
+- Mode Partition : Roboto Mono intégrée, tailles par sélection, feuilles A4 et repères de dépassement.
 - Formatage à la demande ou à l’enregistrement (case propre à chaque document, désactivée initialement).
 - Confirmation avant fermeture des documents modifiés, annuler/rétablir via le composant de texte.
 - Fichiers UTF-8 uniquement, conservation du BOM et des fins de ligne CRLF, sauvegarde atomique, détection des modifications externes.
@@ -79,7 +80,9 @@ puis restaurée au lancement suivant. Sur macOS, elle est stockée dans
 `~/Library/Application Support/MPTE/app.ron`, sous la clé `editor_font_size`.
 Une ancienne préférence `zoom_factor` est convertie en taille de police.
 
-Seule la taille de police est mémorisée. Chaque lancement sans fichier passé en
+Seule la taille globale de police est mémorisée dans les préférences de l’application.
+Les tailles du mode Partition sont enregistrées avec chaque document (voir ci-dessous).
+Chaque lancement sans fichier passé en
 argument commence par un document **Sans titre**. Les documents ouverts lors de
 la fermeture ne sont pas rouverts automatiquement.
 
@@ -112,6 +115,44 @@ est vide et non enregistré.
 La barre d’état réunit ligne/colonne, nombre de lignes, formatage à l’enregistrement,
 encodage et type de fichier. Les commandes de fenêtre restent celles du système
 d’exploitation.
+
+## Mode Partition
+
+Le bouton **Partition** active ou désactive ce mode pour l’onglet courant, y
+compris dans une fenêtre détachée. La police **Roboto Mono** est embarquée et
+fonctionne hors ligne, sans installation sur le Mac. La coloration syntaxique et
+le repliement cèdent la place à des feuilles **A4 portrait (210 × 297 mm)**,
+avec des marges de **15 mm**, un contour de zone utile et des pages numérotées
+séparées par un espace. La pagination suit la hauteur réelle des lignes, même
+lorsque plusieurs tailles coexistent.
+
+Sélectionner du texte, puis utiliser **A−**, **A+** ou **Cmd− / Cmd+** pour
+réduire ou agrandir uniquement cette sélection, de **8 à 72 points**. **14 pt**
+ou **Cmd+0** rétablit la sélection à 14 points. Sans sélection, ces commandes
+ne modifient rien. **Cmd+Z / Cmd+Maj+Z** annulent ou rétablissent les modifications
+de texte et de taille en mode Partition. La taille globale du mode normal reste
+indépendante. Le texte inséré reprend la taille du caractère remplacé, ou celle
+du caractère précédent en fin de document.
+
+Les lignes ne sont pas coupées automatiquement pour préserver l’alignement des
+accords et des paroles. Une ligne qui dépasse la marge droite est signalée en
+rouge et comptée dans la barre Partition : réduire sa taille ou insérer un retour
+à la ligne. Le défilement horizontal permet de corriger toute la ligne. Les
+sauts de page visuels n’ajoutent aucun caractère au document. La sélection
+rectangulaire reste disponible dans le mode normal.
+
+**Enregistrer** conserve le fichier texte UTF-8 et crée à côté un fichier
+`nom-du-fichier.txt.mpte-partition.json` contenant les tailles et le mode choisi.
+Garder ces deux fichiers ensemble lors d’une copie ou d’un déplacement.
+**Enregistrer sous** crée aussi le compagnon de la nouvelle copie. Une modification
+de taille est signalée comme une modification à enregistrer. Repasser en mode
+normal conserve les tailles pour la prochaine activation du mode Partition.
+Si le texte a été modifié par une autre application, MPTE ouvre le texte et
+signale que les anciennes tailles n’ont pas été appliquées. Les modifications
+externes du compagnon sont détectées avant l’enregistrement.
+
+Ces pages sont des repères d’édition ; l’impression et l’export PDF ne sont pas
+encore proposés.
 
 ## Rechercher et remplacer
 

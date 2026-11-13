@@ -4,6 +4,7 @@ mod document;
 mod editor;
 mod formatter;
 mod outline;
+mod partition;
 mod search;
 mod search_ui;
 mod theme;
@@ -47,6 +48,8 @@ enum Action {
     NewWindow,
     Find,
     QuickFind,
+    Partition,
+    PartitionSize(f32, bool),
 }
 struct FormatResult {
     id: Id,
@@ -121,7 +124,10 @@ impl State {
             return;
         }
         match Document::open(&path) {
-            Ok(doc) => {
+            Ok(mut doc) => {
+                if let Some(warning) = doc.partition_warning.take() {
+                    self.error = Some(warning);
+                }
                 if let Some(index) = self.remove_empty_untitled(window) {
                     let id = self.id();
                     self.docs.insert(id, doc);
@@ -137,7 +143,7 @@ impl State {
     fn remove_empty_untitled(&mut self, window: &mut EditorWindow) -> Option<usize> {
         let id = *window.tabs.get(window.active)?;
         let doc = &self.docs[&id];
-        if doc.path.is_some() || !doc.text.is_empty() {
+        if doc.path.is_some() || !doc.text.is_empty() || doc.dirty() {
             return None;
         }
         let index = window.active;
@@ -344,19 +350,37 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         }));
     }
     let previous_font_size = state.editor_font_size;
+    if let Some(doc) = active.and_then(|id| state.docs.get_mut(&id)) {
+        if let Some(partition) = &mut doc.partition {
+            partition.sync(&doc.text, window.selection.clone());
+        }
+    }
+    let partition_active = active.is_some_and(|id| state.docs[&id].partition_active());
     ctx.input_mut(|i| {
         use egui::gui_zoom::kb_shortcuts::{ZOOM_IN, ZOOM_IN_SECONDARY, ZOOM_OUT, ZOOM_RESET};
 
         if i.consume_shortcut(&ZOOM_IN) || i.consume_shortcut(&ZOOM_IN_SECONDARY) {
-            state.editor_font_size =
-                (state.editor_font_size + 1.0).min(theme::MAX_EDITOR_FONT_SIZE);
+            if partition_active {
+                actions.push(Action::PartitionSize(1.0, false));
+            } else {
+                state.editor_font_size =
+                    (state.editor_font_size + 1.0).min(theme::MAX_EDITOR_FONT_SIZE);
+            }
         }
         if i.consume_shortcut(&ZOOM_OUT) {
-            state.editor_font_size =
-                (state.editor_font_size - 1.0).max(theme::MIN_EDITOR_FONT_SIZE);
+            if partition_active {
+                actions.push(Action::PartitionSize(-1.0, false));
+            } else {
+                state.editor_font_size =
+                    (state.editor_font_size - 1.0).max(theme::MIN_EDITOR_FONT_SIZE);
+            }
         }
         if i.consume_shortcut(&ZOOM_RESET) {
-            state.editor_font_size = theme::EDITOR_FONT_SIZE;
+            if partition_active {
+                actions.push(Action::PartitionSize(0.0, true));
+            } else {
+                state.editor_font_size = theme::EDITOR_FONT_SIZE;
+            }
         }
         for (modifiers, key, action) in [
             (
@@ -392,6 +416,33 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             actions.push(Action::Close(Close::Quit));
         }
     });
+    if let Some(id) = active.filter(|_| partition_active) {
+        let editor_id = egui::Id::new(("text", id));
+        if ctx.memory(|m| m.has_focus(editor_id)) {
+            let undo = ctx.input_mut(|i| {
+                if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)
+                    || i.consume_key(Modifiers::COMMAND, Key::Y)
+                {
+                    Some(true)
+                } else if i.consume_key(Modifiers::COMMAND, Key::Z) {
+                    Some(false)
+                } else {
+                    None
+                }
+            });
+            if let Some(redo) = undo {
+                let doc = state.docs.get_mut(&id).unwrap();
+                if let Some(range) = doc.partition.as_mut().unwrap().undo(
+                    &mut doc.text,
+                    window.selection.clone(),
+                    redo,
+                ) {
+                    window.jump = Some((id, range));
+                    doc.revision += 1;
+                }
+            }
+        }
+    }
     if state.editor_font_size != previous_font_size {
         ctx.request_repaint();
         ctx.request_repaint_of(egui::ViewportId::ROOT);
@@ -400,6 +451,7 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         }
     }
     chrome::toolbar(ctx, state, &window, &mut actions);
+    chrome::partition_controls(ctx, state, &window, &mut actions);
     search_ui::quick_bar(ctx, state, &mut window, window_id, &mut actions);
     chrome::status(ctx, state, &window);
     if let Some(id) = active {
@@ -439,6 +491,9 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                 ),
             )
         });
+        if let Some(partition) = doc.partition.as_ref().filter(|p| p.active) {
+            job = partition.layout(&doc.text);
+        }
         window.quick.highlight(id, revision, &mut job);
         {
             if let Some((did, rev, range)) = &window.search.highlight {
@@ -449,9 +504,18 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         }
         let doc = state.docs.get_mut(&id).unwrap();
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(Color32::WHITE))
+            .frame(egui::Frame::NONE.fill(if partition_active {
+                theme::BACKGROUND
+            } else {
+                Color32::WHITE
+            }))
             .show(ctx, |ui| {
-                editor::show(
+                let show_editor = if partition_active {
+                    partition::show
+                } else {
+                    editor::show
+                };
+                show_editor(
                     ctx,
                     ui,
                     id,
@@ -485,6 +549,22 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
         let active = window.tabs.get(window.active).copied();
         match action {
             Action::New => state.add(&mut window, Document::new()),
+            Action::Partition => {
+                if let Some(id) = active {
+                    state.docs.get_mut(&id).unwrap().toggle_partition();
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::new(("text", id))));
+                }
+            }
+            Action::PartitionSize(delta, reset) => {
+                if let Some(id) = active {
+                    let doc = state.docs.get_mut(&id).unwrap();
+                    if let Some(partition) = doc.partition.as_mut().filter(|p| p.active) {
+                        partition.sync(&doc.text, window.selection.clone());
+                        partition.resize(window.selection.clone(), delta, reset);
+                        ctx.memory_mut(|m| m.request_focus(egui::Id::new(("text", id))));
+                    }
+                }
+            }
             Action::Open => {
                 if let Some(paths) = rfd::FileDialog::new().pick_files() {
                     for path in paths {
@@ -780,6 +860,174 @@ mod tests {
         ctx.run(egui::RawInput::default(), |ctx| {
             draw(ctx, &mut app.state.lock().unwrap(), 0)
         })
+    }
+
+    fn score_frame(
+        app: &App,
+        ctx: &egui::Context,
+        width: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 760.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| draw(ctx, &mut app.state.lock().unwrap(), 0),
+        )
+    }
+
+    fn caption_position(output: &egui::FullOutput, caption: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.job.text == caption => {
+                    Some(t.pos + t.galley.size() / 2.0)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing caption: {caption}"))
+    }
+
+    fn score_click(app: &App, ctx: &egui::Context, pos: egui::Pos2) -> egui::FullOutput {
+        let _ = score_frame(app, ctx, 1100.0, vec![egui::Event::PointerMoved(pos)]);
+        let _ = score_frame(
+            app,
+            ctx,
+            1100.0,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+        );
+        let _ = score_frame(
+            app,
+            ctx,
+            1100.0,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        score_frame(app, ctx, 1100.0, vec![])
+    }
+
+    #[test]
+    fn score_button_selection_typography_focus_undo_and_narrow_layout() {
+        let ctx = egui::Context::default();
+        let app = App::new(&ctx, None);
+        let text = format!(
+            "Café 🦀 accords\n{}\n{}",
+            "Am ".repeat(40),
+            "G\n".repeat(80)
+        );
+        let id = {
+            let mut state = app.state.lock().unwrap();
+            // The Rust test runner passes arguments that State::new treats as paths.
+            state.error = None;
+            let id = state.windows[&0].tabs[0];
+            state.docs.get_mut(&id).unwrap().text = text.clone();
+            id
+        };
+        let _ = score_frame(&app, &ctx, 1100., vec![]);
+        let normal = score_frame(&app, &ctx, 1100., vec![]);
+        let output = score_click(&app, &ctx, caption_position(&normal, "Partition"));
+        assert!(app.state.lock().unwrap().docs[&id].partition_active());
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::new(("text", id)))));
+        {
+            let state = app.state.lock().unwrap();
+            assert!(state.docs[&id].partition_pages >= 2);
+            assert_eq!(state.docs[&id].partition_overflow, 1);
+        }
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t)
+            if t.galley.job.text == text && t.galley.job.sections.iter().all(|s| s.format.font_id.family == partition::font_family()))));
+        // A Unicode selection in the actual TextEdit state, followed by a toolbar click.
+        let editor_id = egui::Id::new(("text", id));
+        let mut edit = egui::TextEdit::load_state(&ctx, editor_id).unwrap();
+        edit.cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(4),
+            )));
+        edit.store(&ctx, editor_id);
+        let _ = score_frame(&app, &ctx, 1100., vec![]);
+        let output = score_frame(&app, &ctx, 1100., vec![]);
+        let _ = score_click(&app, &ctx, caption_position(&output, "A+"));
+        {
+            let state = app.state.lock().unwrap();
+            assert_eq!(
+                state.docs[&id]
+                    .partition
+                    .as_ref()
+                    .unwrap()
+                    .selection_size(0..5),
+                "15 pt"
+            );
+            assert_eq!(
+                state.docs[&id]
+                    .partition
+                    .as_ref()
+                    .unwrap()
+                    .selection_size(5..text.len()),
+                "14 pt"
+            );
+            assert_eq!(state.editor_font_size, theme::EDITOR_FONT_SIZE);
+            assert_eq!(state.docs[&id].text, text);
+        }
+        assert!(ctx.memory(|m| m.has_focus(editor_id)));
+        let _ = font_size_shortcut(&app, &ctx, Key::Plus);
+        assert_eq!(
+            app.state.lock().unwrap().docs[&id]
+                .partition
+                .as_ref()
+                .unwrap()
+                .selection_size(0..5),
+            "16 pt"
+        );
+        let _ = score_frame(
+            &app,
+            &ctx,
+            1100.,
+            vec![egui::Event::Key {
+                key: Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            }],
+        );
+        assert_eq!(
+            app.state.lock().unwrap().docs[&id]
+                .partition
+                .as_ref()
+                .unwrap()
+                .selection_size(0..5),
+            "15 pt"
+        );
+        let narrow = score_frame(&app, &ctx, 540., vec![]);
+        assert!(narrow.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "A+" && s.clip_rect.right() <= 540.)));
+        assert_eq!(ctx.zoom_factor(), 1.0);
+        let _ = score_frame(&app, &ctx, 1100., vec![]);
+        let output = score_frame(&app, &ctx, 1100., vec![]);
+        let _ = score_click(&app, &ctx, caption_position(&output, "Partition"));
+        assert!(!app.state.lock().unwrap().docs[&id].partition_active());
+        let _ = font_size_shortcut(&app, &ctx, Key::Plus);
+        assert_eq!(
+            app.state.lock().unwrap().editor_font_size,
+            theme::EDITOR_FONT_SIZE + 1.0
+        );
     }
 
     #[test]
