@@ -167,8 +167,11 @@ pub fn toolbar(
                             let doc = &state.docs[id];
                             let active = index == window.active;
                             let color = if active { theme::BLUE } else { theme::TEXT };
-                            let title =
-                                format!("{}{}", doc.title(), if doc.dirty() { " •" } else { "" });
+                            let title = format!(
+                                "{}{}",
+                                doc.title(),
+                                if doc.display_dirty() { " •" } else { "" }
+                            );
                             let galley = ui.fonts(|f| {
                                 f.layout_no_wrap(title, FontId::proportional(16.0), color)
                             });
@@ -332,15 +335,11 @@ pub fn status(ctx: &egui::Context, state: &mut State, window: &EditorWindow) {
     let caret = egui::TextEdit::load_state(ctx, egui::Id::new(("text", id)))
         .and_then(|s| s.cursor.char_range())
         .map_or(0, |r| r.primary.index);
-    let byte = doc
-        .text
-        .char_indices()
-        .nth(caret)
-        .map_or(doc.text.len(), |(i, _)| i);
-    let line = doc.text[..byte].bytes().filter(|b| *b == b'\n').count() + 1;
-    let start = doc.text[..byte].rfind('\n').map_or(0, |i| i + 1);
+    let byte = doc.byte_at_char(caret);
+    let line = doc.line_at_byte(byte) + 1;
+    let start = doc.line_bounds(byte).start;
     let column = crate::column::visual_width(&doc.text[start..byte]) + 1;
-    let lines = doc.text.split('\n').count();
+    let lines = doc.line_count();
     let language = match doc.extension().as_str() {
         "json" => "JSON",
         "xml" | "plist" => "XML",
@@ -369,7 +368,7 @@ pub fn status(ctx: &egui::Context, state: &mut State, window: &EditorWindow) {
                     })
                     .color(theme::MUTED),
                 );
-                if busy {
+                if busy && ctx.input(|input| input.focused) {
                     ui.spinner();
                 }
                 if let Some(rectangle) = &doc.column.rectangle {

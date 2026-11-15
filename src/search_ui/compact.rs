@@ -337,19 +337,34 @@ fn results(
         egui::ScrollArea::vertical()
             .id_salt("search-results")
             .max_height(180.0)
-            .show(ui, |ui| {
-                for (index, hit) in panel.results.iter().enumerate() {
-                    if ui
-                        .selectable_label(
-                            false,
-                            format!("{}:{}  {}", hit.path.display(), hit.line, hit.preview),
-                        )
-                        .clicked()
-                    {
-                        *clicked = Some(index);
+            .show_rows(
+                ui,
+                ui.spacing().interact_size.y.max(
+                    ui.text_style_height(&egui::TextStyle::Button)
+                        + 2.0 * ui.spacing().button_padding.y,
+                ),
+                panel.results.len(),
+                |ui, range| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    for index in range {
+                        let hit = &panel.results[index];
+                        if ui
+                            .selectable_label(
+                                false,
+                                format!(
+                                    "{}:{}  {}",
+                                    hit.path.display(),
+                                    hit.line,
+                                    hit.preview.replace('\n', " ")
+                                ),
+                            )
+                            .clicked()
+                        {
+                            *clicked = Some(index);
+                        }
                     }
-                }
-            });
+                },
+            );
     }
 }
 fn footer_actions(

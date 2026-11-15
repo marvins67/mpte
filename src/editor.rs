@@ -2,10 +2,11 @@ use crate::{Id, document::Document};
 use eframe::egui::{self, Color32, FontId, Rect, Shape, Stroke, pos2, vec2};
 use std::{ops::Range, sync::Arc};
 
-fn paint_pair(job: &mut egui::text::LayoutJob, pair: Option<(usize, usize)>) {
+fn paint_pair(job: &mut Arc<egui::text::LayoutJob>, pair: Option<(usize, usize)>) {
     let Some((a, b)) = pair else {
         return;
     };
+    let job = Arc::make_mut(job);
     let mut sections = Vec::new();
     for section in &job.sections {
         let mut start = section.byte_range.start;
@@ -69,10 +70,12 @@ fn folded_galley(galley: Arc<egui::Galley>, visible: &[bool]) -> Arc<egui::Galle
     result.rect.max.x = width;
     Arc::new(result)
 }
-fn char_to_byte(text: &str, index: usize) -> usize {
-    text.char_indices()
-        .nth(index)
-        .map_or(text.len(), |(i, _)| i)
+#[derive(Debug)]
+pub(crate) struct GeometryCache {
+    job: Arc<egui::text::LayoutJob>,
+    pixels_per_point: f32,
+    collapsed: std::collections::BTreeSet<usize>,
+    galley: Arc<egui::Galley>,
 }
 
 pub fn show(
@@ -80,7 +83,7 @@ pub fn show(
     ui: &mut egui::Ui,
     id: Id,
     doc: &mut Document,
-    mut job: egui::text::LayoutJob,
+    mut job: Arc<egui::text::LayoutJob>,
     selection: &mut Range<usize>,
     jump: &mut Option<(Id, Range<usize>)>,
 ) {
@@ -91,7 +94,7 @@ pub fn show(
     let initial_cursor = egui::TextEdit::load_state(ctx, editor_id)
         .and_then(|s| s.cursor.char_range())
         .map_or(0, |r| r.primary.index);
-    let caret = char_to_byte(&doc.text, initial_cursor);
+    let caret = doc.byte_at_char(initial_cursor);
     if let Some((did, range)) = jump.as_ref() {
         if *did == id {
             doc.column.clear();
@@ -138,7 +141,7 @@ pub fn show(
                     .unwrap_or_else(|| FontId::monospace(crate::theme::EDITOR_FONT_SIZE));
                 let line_height = ui.fonts(|f| f.row_height(&font));
                 let space = ui.fonts(|f| f.glyph_width(&font, ' '));
-                let mut visible = doc.view.outline.visibility(&doc.view.collapsed);
+                let mut visible = doc.view.visibility();
                 let count = visible.iter().filter(|v| **v).count();
                 let height = (count as f32 * line_height + 4.0).max(viewport_height);
                 let gutter_width = (doc.view.outline.lines.len().to_string().len() as f32 * space
@@ -171,27 +174,17 @@ pub fn show(
                         },
                     );
                     let x = gutter.right() - 12.0;
-                    if doc
-                        .view
-                        .outline
-                        .blocks
-                        .iter()
-                        .any(|b| b.start < line && line <= b.end)
-                    {
+                    if doc.view.outline.inside.get(line).copied().unwrap_or(false) {
                         ui.painter().line_segment(
                             [pos2(x, y), pos2(x, y + line_height)],
                             Stroke::new(1.0, Color32::from_gray(190)),
                         );
                     }
                     // A single control folds all multiline blocks beginning on this line.
-                    let blocks: Vec<_> = doc
-                        .view
-                        .outline
-                        .blocks
-                        .iter()
-                        .filter(|b| b.start == line)
-                        .cloned()
-                        .collect();
+                    let all_blocks = &doc.view.outline.blocks;
+                    let first = all_blocks.partition_point(|block| block.start < line);
+                    let last = all_blocks.partition_point(|block| block.start <= line);
+                    let blocks = &all_blocks[first..last];
                     if !blocks.is_empty() {
                         let closed = blocks
                             .iter()
@@ -236,7 +229,7 @@ pub fn show(
                         }
                         if response.clicked() {
                             doc.column.clear();
-                            for block in &blocks {
+                            for block in blocks {
                                 if closed {
                                     doc.view.collapsed.remove(&block.anchor);
                                 } else {
@@ -265,7 +258,7 @@ pub fn show(
                     }
                 }
                 if toggled {
-                    visible = doc.view.outline.visibility(&doc.view.collapsed);
+                    visible = doc.view.visibility();
                 }
                 let requested_jump = jump.take().filter(|(did, r)| {
                     *did == id
@@ -285,7 +278,24 @@ pub fn show(
                     edit.store(ctx, editor_id);
                 }
                 let column_layer = ui.painter().add(Shape::Noop);
-                let geometry = folded_galley(ui.fonts(|f| f.layout_job(job.clone())), &visible);
+                let pixels_per_point = ctx.pixels_per_point();
+                let geometry = if let Some(cache) = doc.geometry_cache.as_ref().filter(|cache| {
+                    cache.pixels_per_point == pixels_per_point
+                        && cache.collapsed == doc.view.collapsed
+                        && (Arc::ptr_eq(&cache.job, &job) || cache.job == job)
+                }) {
+                    cache.galley.clone()
+                } else {
+                    let galley =
+                        folded_galley(ui.fonts(|f| f.layout_job((*job).clone())), &visible);
+                    doc.geometry_cache = Some(GeometryCache {
+                        job: job.clone(),
+                        pixels_per_point,
+                        collapsed: doc.view.collapsed.clone(),
+                        galley: galley.clone(),
+                    });
+                    galley
+                };
                 crate::column::input(
                     ctx,
                     id,
@@ -301,7 +311,7 @@ pub fn show(
                 );
                 let mut layouter = |ui: &egui::Ui, text: &str, _: f32| {
                     if text == job.text {
-                        folded_galley(ui.fonts(|f| f.layout_job(job.clone())), &visible)
+                        geometry.clone()
                     } else {
                         ui.fonts(|f| {
                             f.layout_job(egui::text::LayoutJob::simple(
@@ -370,10 +380,15 @@ pub fn show(
                         ctx.set_cursor_icon(egui::CursorIcon::Text);
                     }
                 }
+                if output.response.changed() {
+                    ctx.request_repaint();
+                    doc.revision += 1;
+                    doc.view.collapsed.clear();
+                }
                 crate::column::paint(ctx, ui, column_layer, doc, &output, space);
                 if let Some(range) = output.state.cursor.char_range() {
-                    let a = char_to_byte(&doc.text, range.primary.index);
-                    let b = char_to_byte(&doc.text, range.secondary.index);
+                    let a = doc.byte_at_char(range.primary.index);
+                    let b = doc.byte_at_char(range.secondary.index);
                     *selection = a.min(b)..a.max(b);
                     if range.primary.index != initial_cursor {
                         ctx.request_repaint();
@@ -399,6 +414,16 @@ pub fn show(
                 for block in &doc.view.outline.blocks {
                     if doc.view.collapsed.contains(&block.anchor) {
                         continue;
+                    }
+                    if let (Some(first), Some(last)) = (
+                        output.galley.rows.get(block.start + 1),
+                        output.galley.rows.get(block.end),
+                    ) {
+                        if output.galley_pos.y + last.rect.bottom() < viewport.top()
+                            || output.galley_pos.y + first.rect.top() > viewport.bottom()
+                        {
+                            continue;
+                        }
                     }
                     let start = doc.view.outline.lines[block.start];
                     let indent: usize = doc
@@ -434,10 +459,6 @@ pub fn show(
                             .translate(output.galley_pos.to_vec2()),
                         Some(egui::Align::Center),
                     );
-                }
-                if output.response.changed() {
-                    doc.revision += 1;
-                    doc.view.collapsed.clear();
                 }
             });
         });
@@ -501,7 +522,7 @@ mod tests {
                             Color32::BLACK,
                             f32::INFINITY,
                         );
-                        show(ctx, ui, 1, doc, job, &mut (0..0), &mut None);
+                        show(ctx, ui, 1, doc, job.into(), &mut (0..0), &mut None);
                     });
             },
         )

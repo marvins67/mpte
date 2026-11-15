@@ -21,6 +21,14 @@ use syntect::{
 };
 
 type Id = u64;
+#[derive(Debug, PartialEq)]
+struct SyntaxKey {
+    revision: u64,
+    dark: bool,
+    extension: String,
+    font_size: f32,
+}
+
 #[derive(Default)]
 struct EditorWindow {
     tabs: Vec<Id>,
@@ -30,6 +38,7 @@ struct EditorWindow {
     quick: search_ui::Quick,
     selection: std::ops::Range<usize>,
     jump: Option<(Id, std::ops::Range<usize>)>,
+    title: String,
 }
 #[derive(Clone, Copy)]
 enum Close {
@@ -72,12 +81,14 @@ struct State {
     tx: mpsc::Sender<FormatResult>,
     rx: mpsc::Receiver<FormatResult>,
     busy: Vec<Id>,
+    retired: Vec<Id>,
 }
 
 impl State {
     fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         let mut themes = ThemeSet::load_defaults();
+        themes.themes.retain(|name, _| name == "base16-ocean.dark");
         themes.themes.insert("MPTE Light".into(), theme::syntax());
         let mut state = Self {
             editor_font_size: theme::EDITOR_FONT_SIZE,
@@ -91,6 +102,7 @@ impl State {
             tx,
             rx,
             busy: vec![],
+            retired: vec![],
         };
         let mut window = EditorWindow::default();
         for path in std::env::args_os().skip(1) {
@@ -151,6 +163,7 @@ impl State {
         let index = window.active;
         window.tabs.remove(index);
         self.docs.remove(&id);
+        self.retired.push(id);
         window.selection = 0..0;
         window.jump = None;
         Some(index)
@@ -206,6 +219,7 @@ impl State {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         self.busy.push(id);
+        let viewport = ctx.viewport_id();
         std::thread::spawn(move || {
             let result = formatter::format(&source, &extension);
             let _ = tx.send(FormatResult {
@@ -215,12 +229,24 @@ impl State {
                 result,
                 save,
             });
-            ctx.request_repaint();
+            ctx.request_repaint_of(viewport);
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         });
     }
-    fn receive(&mut self) {
+    fn repaint_windows(&self, ctx: &egui::Context) {
+        ctx.request_repaint();
+        for id in self.windows.keys() {
+            ctx.request_repaint_of(if *id == 0 {
+                egui::ViewportId::ROOT
+            } else {
+                egui::ViewportId::from_hash_of(*id)
+            });
+        }
+    }
+    fn receive(&mut self) -> bool {
+        let mut received = false;
         while let Ok(message) = self.rx.try_recv() {
+            received = true;
             self.busy.retain(|id| *id != message.id);
             let Some(doc) = self.docs.get_mut(&message.id) else {
                 continue;
@@ -244,6 +270,7 @@ impl State {
                 Err(error) => self.error = Some(error),
             }
         }
+        received
     }
 }
 
@@ -337,7 +364,9 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
     if state.quitting {
         return;
     }
-    state.receive();
+    if state.receive() {
+        state.repaint_windows(ctx);
+    }
     let Some(mut window) = state.windows.remove(&window_id) else {
         return;
     };
@@ -458,49 +487,43 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
     chrome::status(ctx, state, &window);
     if let Some(id) = active {
         let doc = &state.docs[&id];
-        ctx.send_viewport_cmd(ViewportCommand::Title(format!(
+        let title = format!(
             "{}{} — MPTE",
             doc.title(),
-            if doc.dirty() { " •" } else { "" }
-        )));
-        // Cache by content revision: cursor movement does not re-run syntax highlighting.
-        let extension = doc.extension();
+            if doc.display_dirty() { " •" } else { "" }
+        );
+        // Sending any viewport command requests another repaint, even an identical title.
+        if window.title != title {
+            ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
+            window.title = title;
+        }
         let revision = doc.revision;
-        let dark = ctx.style().visuals.dark_mode;
-        let cache_id = egui::Id::new(("syntax", id));
-        let cached = ctx
-            .data_mut(|d| d.get_temp::<(u64, bool, String, f32, egui::text::LayoutJob)>(cache_id));
-        let mut job = match cached {
-            Some((r, d, e, size, job))
-                if r == revision
-                    && d == dark
-                    && e == extension
-                    && size == state.editor_font_size =>
+        let mut job = if let Some(partition) = doc.partition.as_ref().filter(|p| p.active) {
+            partition.cached_layout(&doc.text)
+        } else {
+            let key = SyntaxKey {
+                revision,
+                dark: ctx.style().visuals.dark_mode,
+                extension: doc.extension(),
+                font_size: state.editor_font_size,
+            };
+            if let Some((_, job)) = doc
+                .syntax_cache
+                .as_ref()
+                .filter(|(cached, _)| *cached == key)
             {
+                job.clone()
+            } else {
+                let job = Arc::new(layout(state, &doc.text, &key.extension, key.dark));
+                state.docs.get_mut(&id).unwrap().syntax_cache = Some((key, job.clone()));
                 job
             }
-            _ => layout(state, &doc.text, &extension, dark),
         };
-        ctx.data_mut(|d| {
-            d.insert_temp(
-                cache_id,
-                (
-                    revision,
-                    dark,
-                    extension.clone(),
-                    state.editor_font_size,
-                    job.clone(),
-                ),
-            )
-        });
-        if let Some(partition) = doc.partition.as_ref().filter(|p| p.active) {
-            job = partition.layout(&doc.text);
-        }
         window.quick.highlight(id, revision, &mut job);
         {
             if let Some((did, rev, range)) = &window.search.highlight {
                 if *did == id && *rev == revision {
-                    search_highlight(&mut job, range);
+                    search_highlight(Arc::make_mut(&mut job), range);
                 }
             }
         }
@@ -528,6 +551,10 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                 );
             });
     } else {
+        if window.title != "MPTE" {
+            window.title = "MPTE".into();
+            ctx.send_viewport_cmd(ViewportCommand::Title(window.title.clone()));
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new("Ouvrez un fichier ou créez un nouvel onglet.").size(18.0));
@@ -541,10 +568,14 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             .filter_map(|f| f.path.clone())
             .collect()
     });
+    if !dropped.is_empty() {
+        ctx.request_repaint();
+    }
     for path in dropped {
         state.open(&mut window, path);
     }
     if !actions.is_empty() {
+        ctx.request_repaint();
         ctx.request_repaint_of(egui::ViewportId::ROOT);
     }
     for action in actions {
@@ -691,6 +722,7 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
             if !matches!(close, Close::Quit) {
                 for id in &ids {
                     state.docs.remove(id);
+                    state.retired.push(*id);
                 }
             }
             match close {
@@ -746,6 +778,11 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
     }
     if !remove_window {
         state.windows.insert(window_id, window);
+    }
+    for id in state.retired.drain(..) {
+        ctx.data_mut(|data| {
+            data.remove::<egui::text_edit::TextEditState>(egui::Id::new(("text", id)))
+        });
     }
 }
 
@@ -804,21 +841,20 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let windows = {
             let mut state = self.state.lock().unwrap();
-            state.receive();
             draw(ctx, &mut state, 0);
             state
                 .windows
-                .keys()
-                .copied()
-                .filter(|id| *id != 0)
+                .iter()
+                .filter(|(id, _)| **id != 0)
+                .map(|(id, window)| (*id, window.title.clone()))
                 .collect::<Vec<_>>()
         };
-        for id in windows {
+        for (id, title) in windows {
             let state = self.state.clone();
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of(id),
                 egui::ViewportBuilder::default()
-                    .with_title("MPTE")
+                    .with_title(title)
                     .with_inner_size([1000.0, 720.0])
                     .with_min_inner_size([540.0, 360.0]),
                 move |ctx, _| {
@@ -853,6 +889,102 @@ fn main() -> eframe::Result {
 mod tests {
     use super::*;
     use eframe::Storage as _;
+
+    fn idle_frame(
+        ctx: &egui::Context,
+        state: &mut State,
+        window: Id,
+        time: f64,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                focused: false,
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 760.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| draw(ctx, state, window),
+        )
+    }
+
+    #[test]
+    fn idle_windows_stop_requesting_immediate_repaints_and_update_titles_on_changes() {
+        for score in [false, true] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let mut state = State::new();
+            let id = state.windows[&0].tabs[0];
+            if score {
+                state.docs.get_mut(&id).unwrap().toggle_partition();
+            }
+            let dir = tempfile::tempdir().unwrap();
+            state
+                .docs
+                .get_mut(&id)
+                .unwrap()
+                .save(&dir.path().join("test.txt"))
+                .unwrap();
+            for frame in 0..10 {
+                let _ = idle_frame(&ctx, &mut state, 0, frame as f64);
+            }
+            let output = idle_frame(&ctx, &mut state, 0, 11.0);
+            let viewport = &output.viewport_output[&egui::ViewportId::ROOT];
+            assert!(viewport.repaint_delay > std::time::Duration::ZERO);
+            assert!(
+                !viewport
+                    .commands
+                    .iter()
+                    .any(|command| matches!(command, ViewportCommand::Title(_)))
+            );
+            let doc = state.docs.get_mut(&id).unwrap();
+            doc.text.push_str("nouveau");
+            doc.revision += 1;
+            let output = idle_frame(&ctx, &mut state, 0, 12.0);
+            assert!(
+                output.viewport_output[&egui::ViewportId::ROOT]
+                    .commands
+                    .iter()
+                    .any(|command| {
+                        matches!(command, ViewportCommand::Title(title) if title.contains('•'))
+                    })
+            );
+        }
+    }
+
+    #[test]
+    fn detached_windows_reuse_titles_and_closed_documents_release_layout_and_undo() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut state = State::new();
+        let mut window = EditorWindow::default();
+        state.add(&mut window, Document::new());
+        let id = window.tabs[0];
+        state.windows.insert(42, window);
+        for frame in 0..10 {
+            let _ = idle_frame(&ctx, &mut state, 42, frame as f64);
+        }
+        let output = idle_frame(&ctx, &mut state, 42, 11.0);
+        assert!(
+            !output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|command| matches!(command, ViewportCommand::Title(_)))
+        );
+        let syntax = Arc::downgrade(&state.docs[&id].syntax_cache.as_ref().unwrap().1);
+        editor::record_undo(&ctx, id, "ancien texte");
+        assert!(egui::TextEdit::load_state(&ctx, egui::Id::new(("text", id))).is_some());
+        state.windows.get_mut(&42).unwrap().closing = Some(Close::Tab(id));
+        let _ = idle_frame(&ctx, &mut state, 42, 12.0);
+        assert!(!state.docs.contains_key(&id));
+        assert!(syntax.upgrade().is_none());
+        assert!(egui::TextEdit::load_state(&ctx, egui::Id::new(("text", id))).is_none());
+        assert_eq!(state.windows[&42].title, "Sans titre — MPTE");
+        let _ = idle_frame(&ctx, &mut state, 42, 13.0);
+        assert_eq!(state.windows[&42].title, "MPTE");
+    }
 
     #[derive(Default)]
     struct TestStorage(BTreeMap<String, String>);

@@ -99,40 +99,95 @@ impl Pattern {
             word: query.word,
         })
     }
-    pub fn hits(&self, text: &str, scope: Range<usize>) -> Vec<Hit> {
+    pub fn ranges<'a>(
+        &'a self,
+        text: &'a str,
+        scope: Range<usize>,
+    ) -> impl Iterator<Item = Range<usize>> + 'a {
         let word = |c: char| c.is_alphanumeric() || c == '_';
         self.regex
-            .captures_iter(text)
-            .filter_map(|cap| {
-                let m = cap.get(0)?;
-                let range = m.range();
-                if range.start < scope.start || range.end > scope.end {
-                    return None;
-                }
-                if self.word
-                    && (text[..range.start].chars().next_back().is_some_and(word)
-                        || text[range.end..].chars().next().is_some_and(word))
-                {
-                    return None;
-                }
-                let replacement = if self.expand {
-                    let mut s = String::new();
-                    cap.expand(&self.replacement, &mut s);
-                    s
-                } else {
-                    self.replacement.clone()
-                };
-                Some(Hit { range, replacement })
+            .find_iter(text)
+            .map(|m| m.range())
+            .filter(move |range| {
+                range.start >= scope.start
+                    && range.end <= scope.end
+                    && (!self.word
+                        || (!text[..range.start].chars().next_back().is_some_and(word)
+                            && !text[range.end..].chars().next().is_some_and(word)))
             })
-            .collect()
+    }
+    pub fn iter<'a>(
+        &'a self,
+        text: &'a str,
+        scope: Range<usize>,
+    ) -> impl Iterator<Item = Hit> + 'a {
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        self.regex.captures_iter(text).filter_map(move |cap| {
+            let m = cap.get(0)?;
+            let range = m.range();
+            if range.start < scope.start || range.end > scope.end {
+                return None;
+            }
+            if self.word
+                && (text[..range.start].chars().next_back().is_some_and(word)
+                    || text[range.end..].chars().next().is_some_and(word))
+            {
+                return None;
+            }
+            let replacement = if self.expand {
+                let mut s = String::new();
+                cap.expand(&self.replacement, &mut s);
+                s
+            } else {
+                self.replacement.clone()
+            };
+            Some(Hit { range, replacement })
+        })
+    }
+    #[cfg(test)]
+    pub fn hits(&self, text: &str, scope: Range<usize>) -> Vec<Hit> {
+        self.iter(text, scope).collect()
     }
     pub fn replace_all(&self, text: &mut String, scope: Range<usize>) -> usize {
-        let hits = self.hits(text, scope);
-        let count = hits.len();
-        for hit in hits.into_iter().rev() {
-            text.replace_range(hit.range, &hit.replacement);
+        self.replace_checked(text, scope, usize::MAX, &AtomicBool::new(false))
+            .expect("unlimited replacement")
+    }
+
+    pub fn replace_checked(
+        &self,
+        text: &mut String,
+        scope: Range<usize>,
+        limit: usize,
+        cancel: &AtomicBool,
+    ) -> Result<usize, String> {
+        let mut output = String::new();
+        let mut cursor = 0;
+        let mut count = 0;
+        for hit in self.iter(text, scope) {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Recherche annulée.".into());
+            }
+            let addition = hit.range.start - cursor + hit.replacement.len();
+            if output.len().saturating_add(addition) > limit {
+                return Err(
+                    "Le texte remplacé dépasse la limite mémoire. Réduisez le périmètre.".into(),
+                );
+            }
+            output.push_str(&text[cursor..hit.range.start]);
+            output.push_str(&hit.replacement);
+            cursor = hit.range.end;
+            count += 1;
         }
-        count
+        if count > 0 {
+            if output.len().saturating_add(text.len() - cursor) > limit {
+                return Err(
+                    "Le texte remplacé dépasse la limite mémoire. Réduisez le périmètre.".into(),
+                );
+            }
+            output.push_str(&text[cursor..]);
+            *text = output;
+        }
+        Ok(count)
     }
 }
 
@@ -166,6 +221,10 @@ pub struct Report {
     pub errors: Vec<String>,
     pub limited: bool,
 }
+pub const MAX_RESULTS: usize = 5000;
+const RESULT_BYTES: usize = 8 * 1024 * 1024;
+const PLAN_BYTES: usize = 100 * 1024 * 1024;
+
 pub fn scan(
     pattern: &Pattern,
     options: &FileOptions,
@@ -191,6 +250,7 @@ pub fn scan(
     let filters = filters.build().map_err(|e| e.to_string())?;
     let mut report = Report::default();
     let mut planned_bytes = 0;
+    let mut result_bytes: usize = 0;
     let walker = walkdir::WalkDir::new(&root)
         .follow_links(false)
         .max_depth(if options.recursive { usize::MAX } else { 1 });
@@ -225,7 +285,7 @@ pub fn scan(
             report.skipped += 1;
             continue;
         }
-        let mut doc = match Document::open(path) {
+        let mut doc = match Document::open_for_search(path, replace) {
             Ok(d) => d,
             Err(_) => {
                 report.skipped += 1;
@@ -233,44 +293,66 @@ pub fn scan(
             }
         };
         report.scanned += 1;
-        let hits = pattern.hits(&doc.text, 0..doc.text.len());
-        report.count += hits.len();
-        for hit in &hits {
-            if report.hits.len() >= 5000 {
-                report.limited = true;
-                break;
+        let mut count = 0;
+        let mut line = 1;
+        let mut previous_start = 0;
+        for range in pattern.ranges(&doc.text, 0..doc.text.len()) {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Recherche annulée.".into());
             }
-            let line = doc.text[..hit.range.start]
+            count += 1;
+            if report.hits.len() >= MAX_RESULTS
+                || result_bytes.saturating_add(range.len()) > RESULT_BYTES
+            {
+                report.limited = true;
+                continue;
+            }
+            line += doc.text[previous_start..range.start]
                 .bytes()
                 .filter(|b| *b == b'\n')
-                .count()
-                + 1;
-            let start = doc.text[..hit.range.start].rfind('\n').map_or(0, |i| i + 1);
-            let end = doc.text[hit.range.start..]
+                .count();
+            previous_start = range.start;
+            let start = doc.text[..range.start].rfind('\n').map_or(0, |i| i + 1);
+            let end = doc.text[range.start..]
                 .find('\n')
-                .map_or(doc.text.len(), |i| hit.range.start + i);
+                .map_or(doc.text.len(), |i| range.start + i);
+            let preview: String = doc.text[start..end].chars().take(200).collect();
+            let bytes = range.len()
+                + preview.len()
+                + path.as_os_str().len()
+                + std::mem::size_of::<FileHit>();
+            if result_bytes.saturating_add(bytes) > RESULT_BYTES {
+                report.limited = true;
+                continue;
+            }
+            result_bytes += bytes;
             report.hits.push(FileHit {
                 document_id: None,
-                matched: doc.text[hit.range.clone()].to_owned(),
+                matched: doc.text[range.clone()].to_owned(),
                 path: path.to_owned(),
-                range: hit.range.clone(),
+                range,
                 line,
-                preview: doc.text[start..end].chars().take(200).collect(),
+                preview,
             });
         }
-        if replace && !hits.is_empty() {
-            planned_bytes += doc.text.len();
-            if planned_bytes > 100 * 1024 * 1024 {
-                return Err(
-                    "Le remplacement dépasse 100 Mio. Réduisez le dossier ou les filtres.".into(),
-                );
+        report.count += count;
+        if replace && count > 0 {
+            if doc.retained_bytes().saturating_add(planned_bytes) > PLAN_BYTES {
+                return Err("Le plan de remplacement dépasse 100 Mio en mémoire. Réduisez le dossier ou les filtres.".into());
             }
-            for hit in hits.iter().rev() {
-                doc.text.replace_range(hit.range.clone(), &hit.replacement);
+            let len = doc.text.len();
+            let source_bytes = doc.retained_bytes().saturating_sub(doc.text.capacity());
+            let output_limit = PLAN_BYTES
+                .saturating_sub(planned_bytes)
+                .saturating_sub(source_bytes);
+            pattern.replace_checked(&mut doc.text, 0..len, output_limit, cancel)?;
+            planned_bytes += doc.retained_bytes();
+            if planned_bytes > PLAN_BYTES {
+                return Err("Le plan de remplacement dépasse 100 Mio en mémoire.".into());
             }
             report.plan.push(PlannedFile {
                 document: doc,
-                count: hits.len(),
+                count,
             });
         }
     }
@@ -316,6 +398,75 @@ pub fn cancel_token() -> Arc<AtomicBool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn streaming_replacement_preserves_utf8_scope_captures_and_zero_width_matches() {
+        let pattern = Pattern::new(&Query {
+            needle: "(é)".into(),
+            replacement: "[$1]".into(),
+            mode: Mode::Regex,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut text = "é é é".to_owned();
+        assert_eq!(pattern.replace_all(&mut text, 3..5), 1);
+        assert_eq!(text, "é [é] é");
+        let pattern = Pattern::new(&Query {
+            needle: "^|$".into(),
+            replacement: "🦀".into(),
+            mode: Mode::Regex,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(pattern.replace_all(&mut text, 0..0), 1);
+        assert_eq!(text, "🦀é [é] é");
+    }
+
+    #[test]
+    fn bounded_or_cancelled_replacement_leaves_the_original_untouched() {
+        let pattern = Pattern::new(&Query {
+            needle: "a".into(),
+            replacement: "large output".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut text = "aaaa".to_owned();
+        assert!(
+            pattern
+                .replace_checked(&mut text, 0..4, 8, &AtomicBool::new(false))
+                .is_err()
+        );
+        assert_eq!(text, "aaaa");
+        assert!(
+            pattern
+                .replace_checked(&mut text, 0..4, 1024, &AtomicBool::new(true))
+                .is_err()
+        );
+        assert_eq!(text, "aaaa");
+    }
+
+    #[test]
+    fn frequent_folder_matches_are_counted_without_retaining_them_all() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("many.txt"), "é\n".repeat(25_000)).unwrap();
+        let pattern = Pattern::new(&Query {
+            needle: "é".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let options = FileOptions {
+            root: dir.path().to_owned(),
+            filters: "*.txt".into(),
+            recursive: false,
+            hidden: false,
+        };
+        let report = scan(&pattern, &options, false, &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.count, 25_000);
+        assert_eq!(report.hits.len(), MAX_RESULTS);
+        assert_eq!(report.hits.last().unwrap().line, MAX_RESULTS);
+        assert!(report.limited);
+        assert!(report.plan.is_empty());
+    }
+
     #[test]
     fn unicode_case_words_and_selection() {
         let q = Query {

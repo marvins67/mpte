@@ -1,7 +1,12 @@
 use std::{
-    io::Write,
+    io::{Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 pub fn format(text: &str, extension: &str) -> Result<String, String> {
@@ -35,9 +40,43 @@ pub fn format(text: &str, extension: &str) -> Result<String, String> {
             "node".into()
         }
     });
-    let mut child = Command::new(node)
-        .arg(tools.join("format.mjs"))
-        .arg(extension)
+    let mut command = Command::new(node);
+    command.arg(tools.join("format.mjs")).arg(extension);
+    run_formatter(
+        command,
+        text.as_bytes().to_vec(),
+        Duration::from_secs(60),
+        64 * 1024 * 1024,
+    )
+}
+
+fn read_limited(
+    mut reader: impl Read,
+    limit: usize,
+    exceeded: Arc<AtomicBool>,
+) -> Result<Vec<u8>, String> {
+    let mut data = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = reader.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            return Ok(data);
+        }
+        if data.len().saturating_add(count) > limit {
+            exceeded.store(true, Ordering::Relaxed);
+            return Err("La sortie du formateur dépasse la limite mémoire.".into());
+        }
+        data.extend_from_slice(&buffer[..count]);
+    }
+}
+
+fn run_formatter(
+    mut command: Command,
+    input: Vec<u8>,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<String, String> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -49,16 +88,60 @@ pub fn format(text: &str, extension: &str) -> Result<String, String> {
         .stdin
         .take()
         .ok_or("Entrée du formateur indisponible")?;
-    let input = text.as_bytes().to_vec();
-    // Write in parallel with output collection to avoid pipe-capacity deadlocks on large files.
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Sortie du formateur indisponible")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Erreur du formateur indisponible")?;
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let stdout_exceeded = exceeded.clone();
+    let stderr_exceeded = exceeded.clone();
     let writer = std::thread::spawn(move || stdin.write_all(&input));
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let output_reader =
+        std::thread::spawn(move || read_limited(stdout, output_limit, stdout_exceeded));
+    let error_reader =
+        std::thread::spawn(move || read_limited(stderr, 1024 * 1024, stderr_exceeded));
+    let started = Instant::now();
+    let status = loop {
+        if exceeded.load(Ordering::Relaxed) || started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            break Err(if exceeded.load(Ordering::Relaxed) {
+                "La sortie du formateur dépasse la limite mémoire.".to_owned()
+            } else {
+                "Le formateur a dépassé le délai maximal de 60 secondes.".to_owned()
+            });
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => std::thread::sleep(
+                Duration::from_millis(100).min(timeout.saturating_sub(started.elapsed())),
+            ),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(error.to_string());
+            }
+        }
+    };
     let written = writer.join().map_err(|_| "Échec du formateur")?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    let output = output_reader
+        .join()
+        .map_err(|_| "Échec de lecture du formateur")?;
+    let errors = error_reader
+        .join()
+        .map_err(|_| "Échec de lecture du formateur")?;
+    let status = status?;
+    let output = output?;
+    let errors = errors?;
+    if !status.success() {
+        return Err(String::from_utf8_lossy(&errors).trim().to_owned());
     }
     written.map_err(|e| e.to_string())?;
-    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    String::from_utf8(output).map_err(|e| e.to_string())
 }
 
 struct UniqueKeys;
@@ -118,6 +201,27 @@ impl<'de> serde::Deserialize<'de> for UniqueKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn external_formatter_timeout_and_output_limit_terminate_the_child() {
+        let mut slow = Command::new("sh");
+        slow.args(["-c", "exec sleep 5"]);
+        let started = Instant::now();
+        assert!(
+            run_formatter(slow, vec![], Duration::from_millis(50), 1024)
+                .unwrap_err()
+                .contains("délai")
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let mut noisy = Command::new("sh");
+        noisy.args(["-c", "printf 1234567890"]);
+        assert!(
+            run_formatter(noisy, vec![], Duration::from_secs(2), 4)
+                .unwrap_err()
+                .contains("mémoire")
+        );
+    }
+
     #[test]
     fn json_preserves_key_order_and_is_idempotent() {
         let result = format(r#"{"z":1,"a":[true,"été"]}"#, "json").unwrap();

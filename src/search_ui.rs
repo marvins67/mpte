@@ -1,7 +1,7 @@
 mod compact;
 use super::{EditorWindow, Id, State};
 use crate::editor::record_undo;
-use crate::search::{self, FileHit, FileOptions, Hit, Mode, Pattern, Query, Report};
+use crate::search::{self, FileHit, FileOptions, Mode, Pattern, Query, Report};
 use eframe::egui;
 use std::{
     ops::Range,
@@ -66,6 +66,8 @@ pub struct Quick {
     focus: bool,
     query: String,
     cache: Option<(Id, u64, String, Vec<Range<usize>>)>,
+    total: usize,
+    current: usize,
 }
 impl Quick {
     pub fn show(&mut self, selected: Option<&str>) {
@@ -75,7 +77,7 @@ impl Quick {
             self.query = text.into();
         }
     }
-    pub fn highlight(&self, id: Id, revision: u64, job: &mut egui::text::LayoutJob) {
+    pub fn highlight(&self, id: Id, revision: u64, job: &mut Arc<egui::text::LayoutJob>) {
         if !self.open {
             return;
         }
@@ -85,6 +87,10 @@ impl Quick {
         if *did != id || *rev != revision {
             return;
         }
+        if ranges.is_empty() {
+            return;
+        }
+        let job = Arc::make_mut(job);
         let mut sections = Vec::new();
         let mut index = 0;
         for section in &job.sections {
@@ -149,20 +155,8 @@ pub fn quick_bar(
             }
         });
     }
-    let count = quick.cache.as_ref().map_or(0, |c| c.3.len());
-    let current = quick
-        .cache
-        .as_ref()
-        .and_then(|(_, _, _, ranges)| {
-            window.search.highlight.as_ref().and_then(|(did, _, r)| {
-                if Some(*did) == id {
-                    ranges.iter().position(|h| h == r).map(|i| i + 1)
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or(0);
+    let count = quick.total;
+    let current = quick.current;
     egui::TopBottomPanel::top("quick-search")
         .show_separator_line(false)
         .exact_height(56.0)
@@ -229,47 +223,52 @@ pub fn quick_bar(
             .as_ref()
             .is_none_or(|(did, rev, q, _)| *did != id || *rev != doc.revision || *q != quick.query);
         if refresh {
-            let hits = if quick.query.is_empty() {
-                vec![]
-            } else {
-                Pattern::new(&Query {
+            let mut hits = Vec::new();
+            quick.total = 0;
+            quick.current = 0;
+            if !quick.query.is_empty() {
+                if let Ok(pattern) = Pattern::new(&Query {
                     needle: quick.query.clone(),
                     ..Default::default()
-                })
-                .map(|p| {
-                    p.hits(&doc.text, 0..doc.text.len())
-                        .into_iter()
-                        .map(|h| h.range)
-                        .collect()
-                })
-                .unwrap_or_default()
-            };
+                }) {
+                    for range in pattern.ranges(&doc.text, 0..doc.text.len()) {
+                        quick.total += 1;
+                        if hits.len() < search::MAX_RESULTS {
+                            hits.push(range);
+                        }
+                    }
+                }
+            }
             quick.cache = Some((id, doc.revision, quick.query.clone(), hits));
             ctx.request_repaint();
         }
         if changed || direction.is_some() {
-            let ranges = &quick.cache.as_ref().unwrap().3;
             let caret = if changed || direction == Some(-1) {
                 window.selection.start
             } else {
                 window.selection.end
             };
-            let hit = if direction == Some(-1) {
-                ranges
-                    .iter()
-                    .rev()
-                    .find(|r| r.end <= caret)
-                    .or_else(|| ranges.last())
-            } else {
-                ranges
-                    .iter()
-                    .find(|r| r.start >= caret)
-                    .or_else(|| ranges.first())
-            };
-            window.search.highlight = hit.map(|r| (id, doc.revision, r.clone()));
-            if let Some(range) = hit {
+            let pattern = Pattern::new(&Query {
+                needle: quick.query.clone(),
+                ..Default::default()
+            });
+            let hit = pattern.ok().and_then(|pattern| {
+                choose(
+                    pattern.ranges(&doc.text, 0..doc.text.len()),
+                    &(caret..caret),
+                    direction == Some(-1),
+                    true,
+                    None,
+                )
+                .0
+            });
+            quick.current = hit.as_ref().map_or(0, |(_, index)| *index);
+            window.search.highlight = hit
+                .as_ref()
+                .map(|(range, _)| (id, doc.revision, range.clone()));
+            if let Some((range, _)) = hit {
                 window.selection = range.clone();
-                window.jump = Some((id, range.clone()));
+                window.jump = Some((id, range));
             }
             ctx.request_repaint();
         }
@@ -383,7 +382,7 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
             Ok(result) => {
                 panel.job = None;
                 match result {
-                    JobResult::Scanned(Ok(report)) => {
+                    JobResult::Scanned(Ok(mut report)) => {
                         panel.message_error = false;
                         panel.message = format!(
                             "{} occurrence(s) · {} fichier(s) lu(s) · {} ignoré(s){}",
@@ -396,8 +395,8 @@ pub fn draw(ctx: &egui::Context, state: &mut State, window: &mut EditorWindow, w
                                 ""
                             }
                         );
-                        panel.results = report.hits.clone();
-                        panel.errors = report.errors.clone();
+                        panel.results = std::mem::take(&mut report.hits);
+                        panel.errors = std::mem::take(&mut report.errors);
                         if !report.plan.is_empty() {
                             panel.report = Some(report);
                         }
@@ -531,6 +530,7 @@ fn execute(
         query.replacement.clear();
     }
     let pattern = Pattern::new(&query)?;
+    let mut result_bytes = 0;
     remember(&mut panel.history, &panel.query.needle);
     remember(&mut panel.replacements, &panel.query.replacement);
     if let Command::Files(replace) = command {
@@ -563,29 +563,32 @@ fn execute(
         panel.results.clear();
         // All open documents includes detached windows. Unsaved buffers are used.
         for (id, doc) in &mut state.docs {
-            let hits = pattern.hits(&doc.text, 0..doc.text.len());
-            if !hits.is_empty() {
-                files += 1;
-            }
-            count += hits.len();
-            if replace && !hits.is_empty() {
-                record_undo(ctx, *id, &doc.text);
-                let len = doc.text.len();
-                pattern.replace_all(&mut doc.text, 0..len);
-                doc.revision += 1;
-            } else if !replace {
-                for hit in hits {
-                    if panel.results.len() < 5000 {
-                        panel.results.push(buffer_hit(*id, doc, hit.range));
-                    }
+            let mut found = 0;
+            if replace {
+                if pattern
+                    .ranges(&doc.text, 0..doc.text.len())
+                    .next()
+                    .is_some()
+                {
+                    record_undo(ctx, *id, &doc.text);
+                    let len = doc.text.len();
+                    found = pattern.replace_all(&mut doc.text, 0..len);
+                    doc.revision += 1;
+                }
+            } else {
+                for range in pattern.ranges(&doc.text, 0..doc.text.len()) {
+                    found += 1;
+                    push_buffer_result(&mut panel.results, &mut result_bytes, *id, doc, range);
                 }
             }
+            files += usize::from(found > 0);
+            count += found;
         }
         panel.message = format!(
             "{count} occurrence(s) dans {files} document(s) ouvert(s){}. Les documents modifiés restent à enregistrer.",
             if replace { " remplacée(s)" } else { "" }
         );
-        ctx.request_repaint_of(egui::ViewportId::ROOT);
+        state.repaint_windows(ctx);
         return Ok(());
     }
     let id = *window
@@ -594,24 +597,25 @@ fn execute(
         .ok_or("Aucun document actif.")?;
     let scope = panel.scope(state, id)?;
     let doc = state.docs.get_mut(&id).unwrap();
-    let hits = pattern.hits(&doc.text, scope.clone());
     match command {
         Command::Current => {
-            panel.results = hits
-                .iter()
-                .take(5000)
-                .map(|h| buffer_hit(id, doc, h.range.clone()))
-                .collect();
-            panel.message = format!(
-                "{} occurrence(s), affichage limité à 5 000 résultats.",
-                hits.len()
-            );
+            panel.results.clear();
+            let mut count = 0;
+            for range in pattern.ranges(&doc.text, scope) {
+                count += 1;
+                push_buffer_result(&mut panel.results, &mut result_bytes, id, doc, range);
+            }
+            panel.message =
+                format!("{count} occurrence(s), affichage limité à 5 000 résultats et 8 Mio.");
         }
         Command::Count => {
-            panel.message = format!("{} occurrence(s).", hits.len());
+            panel.message = format!(
+                "{} occurrence(s).",
+                pattern.ranges(&doc.text, scope).count()
+            );
         }
         Command::ReplaceAll => {
-            if !hits.is_empty() {
+            if pattern.ranges(&doc.text, scope.clone()).next().is_some() {
                 record_undo(ctx, id, &doc.text);
             }
             let old_len = doc.text.len();
@@ -635,7 +639,10 @@ fn execute(
         Command::Next | Command::Replace => {
             let mut selected = window.selection.clone();
             if matches!(command, Command::Replace) {
-                if let Some(hit) = hits.iter().find(|h| h.range == selected) {
+                let replacement = pattern
+                    .iter(&doc.text, scope.clone())
+                    .find(|h| h.range == selected);
+                if let Some(hit) = replacement {
                     record_undo(ctx, id, &doc.text);
                     doc.text.replace_range(hit.range.clone(), &hit.replacement);
                     doc.revision += 1;
@@ -659,28 +666,23 @@ fn execute(
             } else {
                 0..doc.text.len()
             };
-            let hits = pattern.hits(&doc.text, scope);
             let skip_zero = panel
                 .highlight
                 .as_ref()
                 .filter(|(did, rev, _)| *did == id && *rev == doc.revision)
                 .map(|(_, _, r)| r.clone());
-            let next = choose(
-                &hits,
+            let (next, total) = choose(
+                pattern.ranges(&doc.text, scope),
                 &selected,
                 panel.backward,
                 panel.wrap,
                 skip_zero.as_ref(),
             );
-            if let Some(hit) = next {
-                window.jump = Some((id, hit.range.clone()));
-                window.selection = hit.range.clone();
-                panel.highlight = Some((id, doc.revision, hit.range.clone()));
-                panel.message = format!(
-                    "Occurrence {} sur {}.",
-                    hits.iter().position(|h| h.range == hit.range).unwrap() + 1,
-                    hits.len()
-                );
+            if let Some((range, index)) = next {
+                window.jump = Some((id, range.clone()));
+                window.selection = range.clone();
+                panel.highlight = Some((id, doc.revision, range));
+                panel.message = format!("Occurrence {index} sur {total}.");
                 ctx.request_repaint();
             } else {
                 panel.message = "Aucune occurrence suivante dans le périmètre choisi.".into();
@@ -690,38 +692,69 @@ fn execute(
     }
     Ok(())
 }
-fn choose<'a>(
-    hits: &'a [Hit],
+fn choose(
+    hits: impl Iterator<Item = Range<usize>>,
     selection: &Range<usize>,
     backward: bool,
     wrap: bool,
     previous: Option<&Range<usize>>,
-) -> Option<&'a Hit> {
-    let eligible = |h: &&Hit| !(h.range.is_empty() && previous == Some(&h.range));
-    if backward {
-        hits.iter()
-            .rev()
-            .filter(eligible)
-            .find(|h| h.range.end <= selection.start)
-            .or_else(|| if wrap { hits.last() } else { None })
-    } else {
-        hits.iter()
-            .filter(eligible)
-            .find(|h| h.range.start >= selection.end)
-            .or_else(|| if wrap { hits.first() } else { None })
+) -> (Option<(Range<usize>, usize)>, usize) {
+    let mut first = None;
+    let mut last = None;
+    let mut next = None;
+    let mut count = 0;
+    for range in hits {
+        count += 1;
+        if first.is_none() {
+            first = Some((range.clone(), count));
+        }
+        let eligible = !(range.is_empty() && previous == Some(&range));
+        if eligible
+            && ((backward && range.end <= selection.start)
+                || (!backward && range.start >= selection.end && next.is_none()))
+        {
+            next = Some((range.clone(), count));
+        }
+        last = Some((range, count));
     }
+    if next.is_none() && wrap {
+        next = if backward { last } else { first };
+    }
+    (next, count)
+}
+
+fn push_buffer_result(
+    results: &mut Vec<FileHit>,
+    used: &mut usize,
+    id: Id,
+    doc: &crate::document::Document,
+    range: Range<usize>,
+) {
+    if results.len() >= search::MAX_RESULTS {
+        return;
+    }
+    // A bound in bytes also covers a regex matching an entire very large document.
+    const BUDGET: usize = 8 * 1024 * 1024;
+    let path_bytes = doc.path.as_ref().map_or(32, |path| path.as_os_str().len());
+    if used
+        .saturating_add(range.len())
+        .saturating_add(path_bytes + 800 + std::mem::size_of::<FileHit>())
+        > BUDGET
+    {
+        return;
+    }
+    let hit = buffer_hit(id, doc, range);
+    *used += hit.matched.len()
+        + hit.preview.len()
+        + hit.path.as_os_str().len()
+        + std::mem::size_of::<FileHit>();
+    results.push(hit);
 }
 
 fn buffer_hit(id: Id, doc: &crate::document::Document, range: Range<usize>) -> FileHit {
-    let line = doc.text[..range.start]
-        .bytes()
-        .filter(|b| *b == b'\n')
-        .count()
-        + 1;
-    let start = doc.text[..range.start].rfind('\n').map_or(0, |i| i + 1);
-    let end = doc.text[range.start..]
-        .find('\n')
-        .map_or(doc.text.len(), |i| range.start + i);
+    let line = doc.line_at_byte(range.start) + 1;
+    let bounds = doc.line_bounds(range.start);
+    let (start, end) = (bounds.start, bounds.end);
     FileHit {
         path: doc
             .path
@@ -807,6 +840,33 @@ mod tests {
         panel.query.replacement = "fin".into();
         (state, window, panel, id)
     }
+    #[test]
+    fn streaming_navigation_reaches_matches_beyond_the_display_limit() {
+        let pattern = Pattern::new(&Query {
+            needle: "é".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let text = "é ".repeat(6000);
+        let (next, total) = choose(
+            pattern.ranges(&text, 0..text.len()),
+            &(15_000..15_000),
+            false,
+            true,
+            None,
+        );
+        assert_eq!(total, 6000);
+        assert_eq!(next, Some((15_000..15_002, 5001)));
+        let (previous, _) = choose(
+            pattern.ranges(&text, 0..text.len()),
+            &(15_000..15_000),
+            true,
+            true,
+            None,
+        );
+        assert_eq!(previous, Some((14_997..14_999, 5000)));
+    }
+
     #[test]
     fn next_reverse_and_wrap_use_byte_ranges_for_unicode() {
         let (mut state, mut window, mut panel, id) = fixture("été été");
@@ -980,12 +1040,12 @@ mod tests {
         quick.show(None);
         quick.cache = Some((1, 0, "été".into(), vec![0..5, 6..11]));
         let text = "été été";
-        let mut job = egui::text::LayoutJob::simple(
+        let mut job = Arc::new(egui::text::LayoutJob::simple(
             text.into(),
             egui::FontId::monospace(15.0),
             egui::Color32::BLACK,
             f32::INFINITY,
-        );
+        ));
         quick.highlight(1, 0, &mut job);
         assert_eq!(job.text, text);
         let covered: String = job

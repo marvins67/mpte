@@ -1,7 +1,11 @@
 //! Per-character score typography and A4 geometry, independent of the plain-text buffer.
 use eframe::egui::{self, Color32, FontId, Rect, Shape, Stroke, pos2, vec2};
 use serde::{Deserialize, Serialize};
-use std::{ops::Range, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    sync::Arc,
+};
 
 pub const DEFAULT_SIZE: f32 = 14.0;
 pub const MIN_SIZE: f32 = 8.0;
@@ -29,6 +33,15 @@ pub fn caret(ctx: &egui::Context, id: crate::Id, text: &str) -> usize {
 }
 
 const SEPARATOR: &str = "─";
+const HISTORY_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Debug)]
+struct GeometryCache {
+    job: Arc<egui::text::LayoutJob>,
+    pixels_per_point: f32,
+    galley: Arc<egui::Galley>,
+    overflow: usize,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct LineStyle {
@@ -54,6 +67,14 @@ pub struct Data {
     lines: Vec<LineStyle>,
 }
 
+impl Data {
+    pub fn retained_bytes(&self) -> usize {
+        self.text.capacity()
+            + self.runs.capacity() * std::mem::size_of::<Run>()
+            + self.lines.capacity() * std::mem::size_of::<LineStyle>()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Snapshot {
     text: String,
@@ -70,6 +91,9 @@ pub struct Partition {
     lines: Vec<LineStyle>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
+    revision: u64,
+    layout_cache: RefCell<Option<Arc<egui::text::LayoutJob>>>,
+    geometry_cache: RefCell<Option<GeometryCache>>,
 }
 
 impl Partition {
@@ -81,6 +105,9 @@ impl Partition {
             lines: vec![LineStyle::default(); text.split('\n').count()],
             undo: Vec::new(),
             redo: Vec::new(),
+            revision: 0,
+            layout_cache: RefCell::new(None),
+            geometry_cache: RefCell::new(None),
         }
     }
 
@@ -119,6 +146,9 @@ impl Partition {
             lines: data.lines,
             undo: Vec::new(),
             redo: Vec::new(),
+            revision: 0,
+            layout_cache: RefCell::new(None),
+            geometry_cache: RefCell::new(None),
         })
     }
 
@@ -140,6 +170,90 @@ impl Partition {
         }
     }
 
+    pub fn retained_bytes(&self) -> usize {
+        self.text.capacity()
+            + self.sizes.capacity() * std::mem::size_of::<f32>()
+            + self.lines.capacity() * std::mem::size_of::<LineStyle>()
+            + self
+                .undo
+                .iter()
+                .chain(&self.redo)
+                .map(snapshot_bytes)
+                .sum::<usize>()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn invalidate(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        *self.layout_cache.get_mut() = None;
+        *self.geometry_cache.get_mut() = None;
+    }
+
+    /// Compare saved typography without constructing a serialized copy of the document.
+    pub fn matches_data(&self, data: &Data) -> bool {
+        if data.version != 1
+            || self.active != data.active
+            || self.text != data.text
+            || self.lines != data.lines
+        {
+            return false;
+        }
+        let mut offset: usize = 0;
+        for run in &data.runs {
+            let Some(end) = offset.checked_add(run.chars) else {
+                return false;
+            };
+            if !self
+                .sizes
+                .get(offset..end)
+                .is_some_and(|sizes| sizes.iter().all(|size| *size == run.size))
+            {
+                return false;
+            }
+            offset = end;
+        }
+        offset == self.sizes.len()
+    }
+
+    pub fn cached_layout(&self, text: &str) -> Arc<egui::text::LayoutJob> {
+        if let Some(job) = self.layout_cache.borrow().as_ref() {
+            return job.clone();
+        }
+        let job = Arc::new(self.layout(text));
+        *self.layout_cache.borrow_mut() = Some(job.clone());
+        job
+    }
+
+    fn cached_geometry(
+        &self,
+        ui: &egui::Ui,
+        job: Arc<egui::text::LayoutJob>,
+    ) -> (Arc<egui::Galley>, usize) {
+        let pixels_per_point = ui.ctx().pixels_per_point();
+        if let Some(cache) = self.geometry_cache.borrow().as_ref().filter(|cache| {
+            cache.pixels_per_point == pixels_per_point
+                && (Arc::ptr_eq(&cache.job, &job) || cache.job == job)
+        }) {
+            return (cache.galley.clone(), cache.overflow);
+        }
+        let galley = paginate(ui.fonts(|f| f.layout_job((*job).clone())), self);
+        let overflow = galley
+            .rows
+            .iter()
+            .filter(|row| row.rect.width() > CONTENT_WIDTH)
+            .count();
+        *self.geometry_cache.borrow_mut() = Some(GeometryCache {
+            job,
+            pixels_per_point,
+            galley: galley.clone(),
+            overflow,
+        });
+        (galley, overflow)
+    }
+
     fn snapshot(&self, selection: Range<usize>) -> Snapshot {
         Snapshot {
             text: self.text.clone(),
@@ -151,10 +265,9 @@ impl Partition {
 
     fn checkpoint(&mut self, selection: Range<usize>) {
         self.undo.push(self.snapshot(selection));
-        if self.undo.len() > 64 {
-            self.undo.remove(0);
-        }
         self.redo.clear();
+        trim_history(&mut self.undo);
+        self.invalidate();
     }
 
     /// Carry sizes through arbitrary UTF-8 edits (typing, paste, search, formatter).
@@ -342,13 +455,16 @@ impl Partition {
         let current = self.snapshot(selection);
         if redo {
             self.undo.push(current);
+            trim_history(&mut self.undo);
         } else {
             self.redo.push(current);
+            trim_history(&mut self.redo);
         }
         self.text = next.text;
         self.sizes = next.sizes;
         self.lines = next.lines;
         text.clone_from(&self.text);
+        self.invalidate();
         Some(next.selection)
     }
 
@@ -395,6 +511,24 @@ impl Partition {
         }
         job
     }
+}
+
+// Keep the most recent state even when a single document exceeds the budget.
+fn trim_history(history: &mut Vec<Snapshot>) {
+    let mut bytes: usize = history.iter().map(snapshot_bytes).sum();
+    let mut drop_count = 0;
+    while history.len() - drop_count > 1
+        && (history.len() - drop_count > 64 || bytes > HISTORY_BYTES)
+    {
+        bytes -= snapshot_bytes(&history[drop_count]);
+        drop_count += 1;
+    }
+    history.drain(..drop_count);
+}
+fn snapshot_bytes(snapshot: &Snapshot) -> usize {
+    snapshot.text.capacity()
+        + snapshot.sizes.capacity() * std::mem::size_of::<f32>()
+        + snapshot.lines.capacity() * std::mem::size_of::<LineStyle>()
 }
 
 /// Shift whole rows onto successive pages without inserting source characters.
@@ -466,7 +600,7 @@ pub fn show(
     ui: &mut egui::Ui,
     id: crate::Id,
     doc: &mut crate::document::Document,
-    job: egui::text::LayoutJob,
+    job: Arc<egui::text::LayoutJob>,
     selection: &mut Range<usize>,
     jump: &mut Option<(crate::Id, Range<usize>)>,
 ) {
@@ -495,16 +629,16 @@ pub fn show(
             let page_origin = pos2(left, start.y);
             let text_origin = page_origin + vec2(MARGIN, MARGIN);
             let background = ui.painter().add(Shape::Noop);
+            let overflow = Cell::new(0);
             let mut layouter = |ui: &egui::Ui, text: &str, _: f32| {
                 let layout = if job.text == text {
                     job.clone()
                 } else {
-                    doc.partition.as_ref().unwrap().layout(text)
+                    Arc::new(doc.partition.as_ref().unwrap().layout(text))
                 };
-                paginate(
-                    ui.fonts(|f| f.layout_job(layout)),
-                    doc.partition.as_ref().unwrap(),
-                )
+                let (galley, count) = doc.partition.as_ref().unwrap().cached_geometry(ui, layout);
+                overflow.set(count);
+                galley
             };
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
@@ -562,10 +696,14 @@ pub fn show(
                 );
             }
             ui.painter().set(background, Shape::Vec(shapes));
-            let mut overflow = 0;
-            for row in &output.galley.rows {
+            let rows = &output.galley.rows;
+            let first =
+                rows.partition_point(|row| output.galley_pos.y + row.rect.bottom() < clip.top());
+            for row in rows[first..]
+                .iter()
+                .take_while(|row| output.galley_pos.y + row.rect.top() <= clip.bottom())
+            {
                 if row.rect.width() > CONTENT_WIDTH {
-                    overflow += 1;
                     let y = output.galley_pos.y + row.rect.center().y;
                     if y >= clip.top() && y <= clip.bottom() {
                         let x = text_origin.x + CONTENT_WIDTH;
@@ -588,13 +726,12 @@ pub fn show(
                 ),
             );
             ui.allocate_rect(bounds, egui::Sense::hover());
+            if output.response.changed() {
+                ctx.request_repaint();
+                doc.revision += 1;
+            }
             if let Some(range) = output.state.cursor.char_range() {
-                let byte = |c: usize| {
-                    doc.text
-                        .char_indices()
-                        .nth(c)
-                        .map_or(doc.text.len(), |(i, _)| i)
-                };
+                let byte = |c: usize| doc.byte_at_char(c);
                 let a = byte(range.primary.index);
                 let b = byte(range.secondary.index);
                 *selection = a.min(b)..a.max(b);
@@ -610,9 +747,8 @@ pub fn show(
                 );
             }
             doc.partition_pages = pages;
-            doc.partition_overflow = overflow;
+            doc.partition_overflow = overflow.get();
             if output.response.changed() {
-                doc.revision += 1;
                 doc.partition
                     .as_mut()
                     .unwrap()
@@ -624,6 +760,56 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_and_pagination_are_reused_until_typography_text_or_scale_changes() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut score = Partition::new("été\nAm");
+        let first = score.cached_layout("été\nAm");
+        assert!(Arc::ptr_eq(&first, &score.cached_layout("été\nAm")));
+        let mut original = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (galley, _) = score.cached_geometry(ui, first.clone());
+                assert!(Arc::ptr_eq(
+                    &galley,
+                    &score.cached_geometry(ui, first.clone()).0
+                ));
+                original = Some(galley);
+            });
+        });
+        score.toggle_center(0, 0..0);
+        let centered = score.cached_layout("été\nAm");
+        assert!(!Arc::ptr_eq(&first, &centered));
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let galley = score.cached_geometry(ui, centered.clone()).0;
+                assert!(!Arc::ptr_eq(original.as_ref().unwrap(), &galley));
+                assert!(galley.rows[0].rect.left() > 0.0);
+            });
+        });
+        score.resize(0..5, 2.0, false);
+        assert!(!Arc::ptr_eq(&centered, &score.cached_layout("été\nAm")));
+        score.sync("été\nDm", 0..0);
+        assert_eq!(score.cached_layout("été\nDm").text, "été\nDm");
+    }
+
+    #[test]
+    fn score_history_is_bounded_in_bytes_and_keeps_recent_undo_redo() {
+        let mut text = "a".repeat(1024 * 1024);
+        let mut score = Partition::new(&text);
+        for _ in 0..12 {
+            score.resize(0..1, 1.0, false);
+        }
+        assert!(score.undo.len() < 12);
+        assert!(score.undo.iter().map(snapshot_bytes).sum::<usize>() <= HISTORY_BYTES);
+        let previous = score.selection_size(0..1);
+        score.undo(&mut text, 0..1, false).unwrap();
+        assert_ne!(score.selection_size(0..1), previous);
+        score.undo(&mut text, 0..1, true).unwrap();
+        assert_eq!(score.selection_size(0..1), previous);
+    }
 
     #[test]
     fn centering_tracks_unicode_lines_edits_splits_and_undo() {

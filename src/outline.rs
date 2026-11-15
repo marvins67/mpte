@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, ops::Range};
+use std::{cell::RefCell, collections::BTreeSet, ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -11,6 +11,7 @@ pub struct Outline {
     pub lines: Vec<usize>,
     pub pairs: Vec<(usize, usize)>,
     pub blocks: Vec<Block>,
+    pub inside: Vec<bool>,
 }
 impl Outline {
     pub fn parse(text: &str, extension: &str) -> Self {
@@ -164,6 +165,19 @@ impl Outline {
             .blocks
             .dedup_by(|a, b| a.start == b.start && a.end == b.end);
         result.pairs.sort_unstable();
+        let mut changes = vec![0_i64; result.lines.len() + 1];
+        for block in &result.blocks {
+            changes[block.start + 1] += 1;
+            changes[block.end + 1] -= 1;
+        }
+        let mut depth = 0;
+        result.inside = changes[..result.lines.len()]
+            .iter()
+            .map(|change| {
+                depth += change;
+                depth > 0
+            })
+            .collect();
         result
     }
     fn block(&mut self, open: usize, close: usize) {
@@ -208,21 +222,45 @@ impl Outline {
         visible
     }
 }
+#[derive(Debug)]
+struct VisibilityCache {
+    collapsed: BTreeSet<usize>,
+    visible: Arc<Vec<bool>>,
+}
+
 #[derive(Default, Debug)]
 pub struct View {
     revision: Option<u64>,
     extension: String,
     pub outline: Outline,
     pub collapsed: BTreeSet<usize>,
+    visibility: RefCell<Option<VisibilityCache>>,
 }
 impl View {
     pub fn update(&mut self, text: &str, extension: &str, revision: u64) {
         if self.revision != Some(revision) || self.extension != extension {
             self.outline = Outline::parse(text, extension);
+            *self.visibility.get_mut() = None;
             self.collapsed.clear();
             self.revision = Some(revision);
             self.extension = extension.into();
         }
+    }
+    pub fn visibility(&self) -> Arc<Vec<bool>> {
+        if let Some(cache) = self
+            .visibility
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.collapsed == self.collapsed)
+        {
+            return cache.visible.clone();
+        }
+        let visible = Arc::new(self.outline.visibility(&self.collapsed));
+        *self.visibility.borrow_mut() = Some(VisibilityCache {
+            collapsed: self.collapsed.clone(),
+            visible: visible.clone(),
+        });
+        visible
     }
     pub fn reveal(&mut self, range: Range<usize>) {
         let first = self.outline.line_at(range.start);

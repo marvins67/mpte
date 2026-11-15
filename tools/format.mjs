@@ -1,12 +1,14 @@
 import * as prettier from "prettier";
-import java from "prettier-plugin-java";
-import xml from "@prettier/plugin-xml";
 
 export async function format(source, extension) {
   const parser = { java: "java", xml: "xml", html: "html", htm: "html" }[extension];
   if (!parser) throw new Error(`Type non pris en charge : ${extension}`);
+  // HTML uses Prettier's built-in parser; load only the requested external plugin.
+  const plugins = parser === "java"
+    ? [(await import("prettier-plugin-java")).default]
+    : parser === "xml" ? [(await import("@prettier/plugin-xml")).default] : [];
   return prettier.format(source, {
-    parser, plugins: [java, xml], tabWidth: 2, printWidth: 100,
+    parser, plugins, tabWidth: 2, printWidth: 100,
     xmlWhitespaceSensitivity: "strict",
   });
 }

@@ -103,6 +103,34 @@ cargo build --release --locked
 ./target/release/mpte
 ```
 
+## Consommation de ressources
+
+MPTE attend les événements au repos. Le titre natif n’est modifié que lorsqu’il
+change ; les fenêtres sans focus ne sont plus entretenues par une boucle de
+rafraîchissement. Les tâches terminées actualisent les fenêtres concernées.
+
+La coloration, la géométrie de l’éditeur, les index Unicode et la pagination A4
+sont réutilisés tant que leurs données ne changent pas. Les caches et l’historique
+d’édition d’un document fermé sont libérés pendant la session.
+
+Le mode Partition conserve au plus 64 états par pile d’annulation/rétablissement,
+avec un budget de 32 Mio par pile. Le dernier état est conservé même si un seul
+document dépasse ce budget, pour garder une annulation possible.
+
+La recherche rapide surligne les 5 000 premières occurrences ; son compteur et
+sa navigation couvrent toutes les occurrences. Les listes de résultats avancés
+ne construisent que les lignes visibles. Une recherche dans les fichiers sans
+remplacement ne charge pas les compagnons Partition ni les copies de sauvegarde.
+
+Les formateurs Node ont une durée maximale de 60 secondes, une sortie limitée à
+64 Mio et un diagnostic limité à 1 Mio. Un dépassement affiche une erreur sans
+remplacer le document. Seul le plugin Java ou XML nécessaire est chargé ; HTML
+utilise le parseur intégré de Prettier.
+
+Les vérifications du repos et les limites restantes sont décrites dans
+[docs/performance.md](docs/performance.md). Le comportement de veille et les gains
+énergétiques réels restent à mesurer sur le Mac, avec la version Release.
+
 ## Interface et documents
 
 La barre d’outils donne aussi accès à Enregistrer sous, Nouvelle fenêtre, Détacher
@@ -195,7 +223,7 @@ des documents sont normalisées en `\n` pendant l’édition.
 La recherche dans les fichiers accepte un dossier et des filtres séparés par `;`
 (ex. `*.json;*.xml`). Elle s’exécute en arrière-plan, avec sous-dossiers et éléments
 cachés en option. Les liens symboliques sont ignorés. Les fichiers binaires,
-non UTF-8 ou dépassant 16 Mio sont ignorés. L’affichage est limité à 5 000 résultats.
+non UTF-8 ou dépassant 16 Mio sont ignorés. L’affichage est limité à 5 000 résultats et à 8 Mio de données de résultats. Le comptage continue au-delà de ces limites.
 Un clic ouvre le résultat et sélectionne l’occurrence. Si le contenu a changé,
 il faut relancer la recherche.
 
@@ -204,7 +232,7 @@ remplacement dans un dossier prépare d’abord un aperçu, puis exige une confi
 avant d’écrire sur disque. Les fichiers ouverts dans MPTE sont ignorés par cette
 opération. Pour les traiter, utiliser le remplacement dans tous les documents ouverts.
 Les changements externes sont détectés avant chaque écriture. Le plan est limité
-à 100 Mio de texte. Après une annulation ou une erreur, les fichiers déjà
+à 100 Mio de données de documents conservées en mémoire (texte, copies de sauvegarde et données Partition comprises). Après une annulation ou une erreur, les fichiers déjà
 enregistrés conservent les modifications effectuées. Le détail des erreurs est affiché dans le dialogue.
 
 ## Navigation dans les blocs
