@@ -5,6 +5,7 @@ mod editor;
 mod formatter;
 mod outline;
 mod partition;
+mod partition_pdf;
 mod search;
 mod search_ui;
 mod theme;
@@ -61,6 +62,11 @@ enum Action {
     PartitionSize(f32, bool),
     PartitionSeparator,
     PartitionCenter,
+    PartitionPdf,
+}
+enum TaskResult {
+    Format(FormatResult),
+    Pdf(Result<(), String>),
 }
 struct FormatResult {
     id: Id,
@@ -78,8 +84,8 @@ struct State {
     syntax: SyntaxSet,
     themes: ThemeSet,
     quitting: bool,
-    tx: mpsc::Sender<FormatResult>,
-    rx: mpsc::Receiver<FormatResult>,
+    tx: mpsc::Sender<TaskResult>,
+    rx: mpsc::Receiver<TaskResult>,
     busy: Vec<Id>,
     retired: Vec<Id>,
 }
@@ -222,13 +228,13 @@ impl State {
         let viewport = ctx.viewport_id();
         std::thread::spawn(move || {
             let result = formatter::format(&source, &extension);
-            let _ = tx.send(FormatResult {
+            let _ = tx.send(TaskResult::Format(FormatResult {
                 id,
                 revision,
                 source,
                 result,
                 save,
-            });
+            }));
             ctx.request_repaint_of(viewport);
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         });
@@ -247,6 +253,15 @@ impl State {
         let mut received = false;
         while let Ok(message) = self.rx.try_recv() {
             received = true;
+            let message = match message {
+                TaskResult::Format(message) => message,
+                TaskResult::Pdf(result) => {
+                    if let Err(error) = result {
+                        self.error = Some(format!("Export PDF : {error}"));
+                    }
+                    continue;
+                }
+            };
             self.busy.retain(|id| *id != message.id);
             let Some(doc) = self.docs.get_mut(&message.id) else {
                 continue;
@@ -271,6 +286,76 @@ impl State {
             }
         }
         received
+    }
+
+    fn export_partition(&mut self, id: Id, ctx: &egui::Context) {
+        let doc = &self.docs[&id];
+        let Some(score) = doc.partition.as_ref().filter(|p| p.active) else {
+            return;
+        };
+        let export = match partition_pdf::Export::new(ctx, score, &doc.text) {
+            Ok(export) => export,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        let name = std::path::Path::new(&doc.title()).with_extension("pdf");
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Exporter la partition en PDF")
+            .add_filter("Document PDF", &["pdf"])
+            .set_file_name(name.to_string_lossy());
+        if let Some(parent) = doc.path.as_ref().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(parent);
+        }
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        if !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+        {
+            self.error = Some("Choisissez un nom de fichier se terminant par .pdf.".into());
+            return;
+        }
+        // Never replace a source file currently open in the editor, including aliases.
+        if let Ok(target) = path.canonicalize() {
+            if self
+                .docs
+                .values()
+                .filter_map(|doc| doc.path.as_ref())
+                .any(|source| source.canonicalize().is_ok_and(|source| source == target))
+            {
+                self.error = Some(
+                    "Choisissez un autre nom pour ne pas remplacer un document ouvert.".into(),
+                );
+                return;
+            }
+        }
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        let viewport = ctx.viewport_id();
+        std::thread::spawn(move || {
+            let result = (|| {
+                export.save(&path)?;
+                #[cfg(target_os = "macos")]
+                {
+                    let status = std::process::Command::new("open")
+                        .arg(&path)
+                        .status()
+                        .map_err(|e| {
+                            format!("Le PDF est enregistré, mais son ouverture a échoué : {e}")
+                        })?;
+                    if !status.success() {
+                        return Err("Le PDF est enregistré, mais son ouverture automatique a échoué. Ouvrez-le depuis le Finder.".into());
+                    }
+                }
+                Ok(())
+            })();
+            let _ = tx.send(TaskResult::Pdf(result));
+            ctx.request_repaint_of(viewport);
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        });
     }
 }
 
@@ -586,6 +671,11 @@ fn draw(ctx: &egui::Context, state: &mut State, window_id: Id) {
                 if let Some(id) = active {
                     state.docs.get_mut(&id).unwrap().toggle_partition();
                     ctx.memory_mut(|m| m.request_focus(egui::Id::new(("text", id))));
+                }
+            }
+            Action::PartitionPdf => {
+                if let Some(id) = active {
+                    state.export_partition(id, ctx);
                 }
             }
             Action::PartitionSize(delta, reset) => {
@@ -1267,8 +1357,12 @@ mod tests {
                 .selection_size(0..5),
             "15 pt"
         );
+        for _ in 0..3 {
+            let _ = score_frame(&app, &ctx, 540., vec![]);
+        }
         let narrow = score_frame(&app, &ctx, 540., vec![]);
         assert!(narrow.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "A+" && s.clip_rect.right() <= 540.)));
+        assert!(narrow.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "Exporter PDF…" && s.clip_rect.contains_rect(egui::Rect::from_min_size(t.pos, t.galley.size())))));
         assert_eq!(ctx.zoom_factor(), 1.0);
         let _ = score_frame(&app, &ctx, 1100., vec![]);
         let output = score_frame(&app, &ctx, 1100., vec![]);
@@ -1433,13 +1527,13 @@ mod tests {
         state.docs.get_mut(&id).unwrap().text = "Nouvelle saisie".into();
         state
             .tx
-            .send(FormatResult {
+            .send(TaskResult::Format(FormatResult {
                 id,
                 revision: 0,
                 source: "Ancienne saisie".into(),
                 result: Ok("Résultat périmé".into()),
                 save: true,
-            })
+            }))
             .unwrap();
         state.receive();
         assert_eq!(state.docs[&id].text, "Nouvelle saisie");

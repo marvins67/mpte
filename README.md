@@ -191,8 +191,18 @@ Si le texte a été modifié par une autre application, MPTE ouvre le texte et
 signale que l’ancienne mise en page n’a pas été appliquée. Les modifications
 externes du compagnon sont détectées avant l’enregistrement.
 
-Ces pages sont des repères d’édition ; l’impression et l’export PDF ne sont pas
-encore proposés.
+**Exporter PDF…** dans la barre Partition enregistre les pages A4 de l’onglet
+courant, puis ouvre le PDF dans l’application par défaut sur Mac (habituellement
+Aperçu). Utiliser **Cmd+P** dans cette application pour l’imprimer à **100 %**.
+L’export reprend le texte courant, même non enregistré, avec les tailles, les
+centrages, les séparations, les marges et les sauts de page de l’éditeur. Il ne
+modifie ni le texte ni son compagnon Partition. Les repères, numéros de page et
+contours d’édition ne sont pas imprimés. Corriger les lignes signalées comme trop
+longues avant d’exporter ; MPTE refuse de produire un PDF qui les tronquerait.
+Le PDF est vectoriel et fonctionne hors ligne sans outil externe ; le texte y
+est dessiné en contours, pour préserver la police sans installation, et ne peut
+pas être sélectionné ou recherché. L’export s’exécute en arrière-plan après le
+choix du fichier.
 
 ## Rechercher et remplacer
 

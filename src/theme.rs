@@ -14,7 +14,7 @@ pub const EDITOR_FONT_SIZE: f32 = 14.0;
 pub const MIN_EDITOR_FONT_SIZE: f32 = 8.0;
 pub const MAX_EDITOR_FONT_SIZE: f32 = 72.0;
 
-pub fn install(ctx: &egui::Context) {
+pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "Roboto Mono".into(),
@@ -25,7 +25,11 @@ pub fn install(ctx: &egui::Context) {
     fonts
         .families
         .insert(crate::partition::font_family(), family);
-    ctx.set_fonts(fonts);
+    fonts
+}
+
+pub fn install(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::light();
     style.visuals.override_text_color = Some(TEXT);

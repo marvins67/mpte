@@ -18,6 +18,9 @@ walkdir = "2.5"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
+pdf-writer = "0.14"
+ttf-parser = "0.25.1"
+flate2 = "1.1"
 
 [profile.release]
 lto = "thin"

@@ -186,6 +186,10 @@ impl Partition {
         self.revision
     }
 
+    pub fn is_separator(&self, line: usize) -> bool {
+        self.lines.get(line).is_some_and(|style| style.separator)
+    }
+
     fn invalidate(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         *self.layout_cache.get_mut() = None;

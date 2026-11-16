@@ -317,6 +317,12 @@ pub fn partition_controls(
                 {
                     actions.push(Action::PartitionCenter);
                 }
+                if ui.button("Exporter PDF…")
+                    .on_hover_text("Exporter les pages A4 en PDF, puis les imprimer depuis Aperçu sur Mac")
+                    .clicked()
+                {
+                    actions.push(Action::PartitionPdf);
+                }
                 ui.label(format!("A4 · {} page(s) · marges 15 mm", doc.partition_pages));
                 if doc.partition_overflow > 0 {
                     ui.colored_label(Color32::from_rgb(185, 40, 35), format!("{} ligne(s) trop longue(s)", doc.partition_overflow))
